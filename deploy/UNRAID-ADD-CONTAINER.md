@@ -18,7 +18,7 @@ ssh root@192.168.1.12 'bash -s' < deploy/unraid-docker-run.sh
 
 ## Add Container (UI) fields
 
-**Icon URL:** `https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png`
+**Icon URL:** `https://avatars.githubusercontent.com/u/113954515?s=200&v=4`
 
 
 | Field | Value |

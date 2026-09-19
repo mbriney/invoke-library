@@ -48,7 +48,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${NAME}"; then
   docker rm "${NAME}" || true
 fi
 
-ICON_URL="https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png"
+ICON_URL="https://avatars.githubusercontent.com/u/113954515?s=200&v=4"
 docker run -d \
   --name "${NAME}" \
   --restart unless-stopped \

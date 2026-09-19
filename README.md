@@ -96,9 +96,9 @@ Filter chips **All | Outputs | Inputs** apply server-side (`GET /api/images?kind
 
 Template Icon URL (also used as `net.unraid.docker.icon`):
 
-`https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png`
+`https://avatars.githubusercontent.com/u/113954515?s=200&v=4`
 
-In **Add Container**, paste that into the **Icon** field (or re-apply the template from `unraid/my-invoke-library.xml`). Asset source: [`unraid/icon.png`](unraid/icon.png).
+In **Add Container**, paste that into the **Icon** field (or re-apply the template from `unraid/my-invoke-library.xml`). The local [`unraid/icon.png`](unraid/icon.png) remains in the repo, but Unraid now prefers the Invoke organization avatar URL.
 
 ## Unraid example
 

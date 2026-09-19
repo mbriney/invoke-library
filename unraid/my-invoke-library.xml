@@ -13,7 +13,7 @@
   <Category>MediaApp:Photos Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/my-invoke-library.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png</Icon>
+  <Icon>https://avatars.githubusercontent.com/u/113954515?s=200&amp;v=4</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <Config Name="Host Port" Target="8080" Default="8091" Mode="tcp" Description="Host port mapped to container 8080" Type="Port" Display="always" Required="true" Mask="false">8091</Config>
   <Config Name="Invoke outputs (RO)" Target="/data/invoke-outputs" Default="/mnt/user/appdata/invokeai/outputs" Mode="ro" Description="InvokeAI outputs directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/invokeai/outputs</Config>

@@ -16,3 +16,4 @@ build/
 *.log
 thumb_cache/
 data/
+deploy/invoke-library-image.tar

@@ -9,7 +9,9 @@ Works anywhere you can run Docker: Linux NAS (Unraid, TrueNAS), a homelab box, o
 ## Features
 
 - Mobile-friendly thumbnail grid with multi-select (**select all on page**), and per-tile **zoom** (full-resolution lightbox)
-- **Input vs Output** badges and All / Outputs / Inputs filter
+- **Input vs Output** badges and All / Outputs / Inputs / **Lookalikes** filter
+- **Delete all inputs** (library-wide) with strong confirm (type `DELETE` or checkbox)
+- **Lookalikes**: perceptual aHash groups (Hamming ≤ `LOOKALIKE_HAMMING`), mixed input+output highlighted; delete inputs in groups / except newest
 - Delete via InvokeAI `POST /api/v1/images/delete` (never silent filesystem-only delete)
 - Copy or move selected images into configurable **Keepers** folders (nested folders + searchable picker)
 - Path escape protection (`realpath` under allowed roots)
@@ -43,6 +45,7 @@ Map your Invoke outputs (read-only) and a keepers/archive directory (read-write)
 | `CONFIG_DIR` | `/data/config` | App config / cache root |
 | `THUMBS_DIR` | `$CONFIG_DIR/thumbs` | Thumbnail cache (optional override) |
 | `IMAGE_SUBDIR` | `images` | Prefer this subfolder under outputs when listing |
+| `LOOKALIKE_HAMMING` | `8` | aHash Hamming distance for Lookalikes grouping (0–32) |
 | `PORT` | `8080` | Listen port inside the container |
 | `APP_TITLE` | `Invoke Library` | Browser / UI title |
 | `KEEP_LABEL` | `Keepers` | UI label for the archive destination |
@@ -168,6 +171,12 @@ Recursive listing under `KEEP_DIR` can be slow on large archive shares (e.g. Fri
 Copy, move, and delete run **one image at a time** so the UI can show a determinate progress bar (`12 / 48`) and the current filename. Move is still copy-then-Invoke-delete per file.
 
 **Error policy:** on a per-item failure the run **continues** with the rest; the panel shows an error count and the toast summarizes (`N ok, M failed`). Successful items are removed from the selection; failed ones stay selected. Confirm/Cancel are disabled while a bulk run is in progress.
+
+**Delete all inputs** lists every Input-classified image (same rules as the Inputs filter), then deletes in small batches via Invoke — never filesystem unlink. Strong confirm required (type `DELETE` or check “I understand”).
+
+## Lookalikes
+
+The **Lookalikes** filter computes a 64-bit average hash (aHash) with Pillow, caches results in `$CONFIG_DIR/phash-cache.json` (keyed by relative path + mtime), and groups near-duplicates within Hamming distance `LOOKALIKE_HAMMING` (default 8). Mixed **input + output** groups are listed first. Per-group actions: Select group, Delete except newest, Delete inputs. Toolbar helper **Delete inputs in lookalike groups** drops only Input twins in mixed groups (keeps Outputs).
 
 ## License
 

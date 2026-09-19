@@ -8,16 +8,22 @@
     selected: new Set(),
     keepLabel: "Keepers",
     appTitle: "Invoke Library",
-    action: null, // 'copy' | 'move' | 'delete'
+    action: null, // 'copy' | 'move' | 'delete' | 'delete-all-inputs' | 'delete-lookalike-inputs' | 'delete-paths'
+    pendingPaths: null, // for delete-paths / mass actions
     folders: [],
-    foldersLoaded: false, // warm in-memory list across modal open/close
+    foldersLoaded: false,
     folderFilter: "",
     selectedFolder: "",
-    kindFilter: "all", // all | output | input
+    kindFilter: "all", // all | output | input | lookalikes
     kindCounts: { all: 0, output: 0, input: 0, unknown: 0 },
+    lookalikeGroups: [],
+    lookalikeStats: null,
+    lookalikeHamming: 8,
     bulkRunning: false,
+    strongConfirmOk: false,
   };
 
+  const DELETE_BATCH = 10;
   const $ = (sel) => document.querySelector(sel);
   const grid = $("#grid");
   const selCount = $("#sel-count");
@@ -63,6 +69,13 @@
   }
 
   function pagePaths() {
+    if (state.kindFilter === "lookalikes") {
+      const paths = [];
+      for (const g of state.lookalikeGroups) {
+        for (const it of g.items || []) paths.push(it.path);
+      }
+      return paths;
+    }
     return state.items.map((item) => item.path);
   }
 
@@ -85,6 +98,36 @@
     chk.checked = total > 0 && selected === total;
   }
 
+  function updateFilterActionButtons() {
+    const delAll = $("#btn-delete-all-inputs");
+    const delLook = $("#btn-delete-lookalike-inputs");
+    const inputCount = (state.kindCounts && state.kindCounts.input) || 0;
+    if (delAll) delAll.disabled = inputCount === 0 || state.bulkRunning;
+    if (delLook) {
+      const show = state.kindFilter === "lookalikes";
+      delLook.hidden = !show;
+      const mixedInputs = countLookalikeMixedInputs();
+      delLook.disabled = !show || mixedInputs === 0 || state.bulkRunning;
+      if (show) {
+        delLook.textContent =
+          mixedInputs > 0
+            ? `Delete inputs in lookalike groups (${mixedInputs})`
+            : "Delete inputs in lookalike groups";
+      }
+    }
+  }
+
+  function countLookalikeMixedInputs() {
+    let n = 0;
+    for (const g of state.lookalikeGroups) {
+      if (!g.mixed) continue;
+      for (const it of g.items || []) {
+        if (it.kind === "input") n += 1;
+      }
+    }
+    return n;
+  }
+
   function updateToolbar() {
     const n = state.selected.size;
     selCount.textContent = n ? `${n} selected` : "None";
@@ -92,50 +135,143 @@
     $("#btn-copy").disabled = n === 0;
     $("#btn-move").disabled = n === 0;
     updatePageSelectCheckbox();
+    updateFilterActionButtons();
+  }
+
+  function makeCard(item) {
+    const card = document.createElement("div");
+    card.className = "card" + (state.selected.has(item.path) ? " selected" : "");
+    card.dataset.path = item.path;
+    const kind = item.kind || "unknown";
+    const kindLabel = kind === "output" ? "Output" : kind === "input" ? "Input" : "Unknown";
+    card.innerHTML = `
+      <div class="check">${state.selected.has(item.path) ? "✓" : ""}</div>
+      <span class="kind-badge ${kind}">${kindLabel}</span>
+      <img loading="lazy" alt="" src="/api/images/thumb?path=${encodeURIComponent(item.path)}" />
+      <button type="button" class="zoom-btn" aria-label="View full size" title="View full size">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+          <path fill="currentColor" d="M12 10h-2v2H9v-2H7V9h2V7h1v2h2v1z"/>
+        </svg>
+      </button>
+    `;
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".zoom-btn")) return;
+      if (e.detail === 2) {
+        openLightbox(item.path);
+        return;
+      }
+      toggleSelect(item.path);
+      try {
+        grid.focus({ preventScroll: true });
+      } catch (_) {
+        grid.focus();
+      }
+    });
+    const zoomBtn = card.querySelector(".zoom-btn");
+    zoomBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openLightbox(item.path);
+    });
+    return card;
   }
 
   function renderGrid() {
     grid.innerHTML = "";
+    grid.className = "grid";
+    if (state.kindFilter === "lookalikes") {
+      renderLookalikes();
+      return;
+    }
     if (!state.items.length) {
       grid.innerHTML = `<div class="empty">No images found under outputs.</div>`;
       return;
     }
     const frag = document.createDocumentFragment();
-    for (const item of state.items) {
-      const card = document.createElement("div");
-      card.className = "card" + (state.selected.has(item.path) ? " selected" : "");
-      card.dataset.path = item.path;
-      const kind = item.kind || "unknown";
-      const kindLabel = kind === "output" ? "Output" : kind === "input" ? "Input" : "Unknown";
-      card.innerHTML = `
-        <div class="check">${state.selected.has(item.path) ? "✓" : ""}</div>
-        <span class="kind-badge ${kind}">${kindLabel}</span>
-        <img loading="lazy" alt="" src="/api/images/thumb?path=${encodeURIComponent(item.path)}" />
-        <button type="button" class="zoom-btn" aria-label="View full size" title="View full size">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-            <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-            <path fill="currentColor" d="M12 10h-2v2H9v-2H7V9h2V7h1v2h2v1z"/>
-          </svg>
-        </button>
-      `;
-      card.addEventListener("click", (e) => {
-        if (e.target.closest(".zoom-btn")) return;
-        if (e.detail === 2) {
-          openLightbox(item.path);
+    for (const item of state.items) frag.appendChild(makeCard(item));
+    grid.appendChild(frag);
+  }
+
+  function renderLookalikes() {
+    grid.className = "lookalike-wrap";
+    if (!state.lookalikeGroups.length) {
+      grid.innerHTML = `<div class="lookalike-empty">No lookalike groups found (Hamming ≤ ${state.lookalikeHamming}). Try Refresh after new uploads.</div>`;
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    state.lookalikeGroups.forEach((g, idx) => {
+      const section = document.createElement("section");
+      section.className = "lookalike-group" + (g.mixed ? " mixed" : "");
+      section.dataset.groupId = g.id || `g${idx}`;
+
+      const header = document.createElement("div");
+      header.className = "lookalike-group-header";
+      const title = document.createElement("div");
+      title.className = "lookalike-group-title";
+      const kinds = (g.kinds || []).join(" + ") || "group";
+      title.innerHTML =
+        `Group ${idx + 1} · ${g.size || (g.items || []).length} images · ${escapeHtml(kinds)}` +
+        (g.mixed ? `<span class="badge-mixed">input + output</span>` : "");
+      header.appendChild(title);
+
+      const actions = document.createElement("div");
+      actions.className = "lookalike-group-actions";
+      const btnSelect = document.createElement("button");
+      btnSelect.type = "button";
+      btnSelect.textContent = "Select group";
+      btnSelect.addEventListener("click", () => selectGroup(g));
+      actions.appendChild(btnSelect);
+
+      const btnKeepNewest = document.createElement("button");
+      btnKeepNewest.type = "button";
+      btnKeepNewest.className = "danger";
+      btnKeepNewest.textContent = "Delete except newest";
+      btnKeepNewest.addEventListener("click", () => {
+        const items = [...(g.items || [])].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        const paths = items.slice(1).map((it) => it.path);
+        if (!paths.length) {
+          toast("Nothing to delete in this group", "error");
           return;
         }
-        toggleSelect(item.path);
-        try { grid.focus({ preventScroll: true }); } catch (_) { grid.focus(); }
+        openDeletePathsModal(
+          paths,
+          `Delete ${paths.length} older lookalike(s) and keep the newest image. Deletes go through the InvokeAI API.`
+        );
       });
-      const zoomBtn = card.querySelector(".zoom-btn");
-      zoomBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openLightbox(item.path);
-      });
-      frag.appendChild(card);
-    }
+      actions.appendChild(btnKeepNewest);
+
+      const inputPaths = (g.items || []).filter((it) => it.kind === "input").map((it) => it.path);
+      if (inputPaths.length) {
+        const btnInputs = document.createElement("button");
+        btnInputs.type = "button";
+        btnInputs.className = "danger";
+        btnInputs.textContent = `Delete inputs (${inputPaths.length})`;
+        btnInputs.addEventListener("click", () => {
+          openDeletePathsModal(
+            inputPaths,
+            `Delete ${inputPaths.length} Input-classified image(s) in this group via InvokeAI. Outputs stay.`
+          );
+        });
+        actions.appendChild(btnInputs);
+      }
+
+      header.appendChild(actions);
+      section.appendChild(header);
+
+      const inner = document.createElement("div");
+      inner.className = "grid";
+      for (const item of g.items || []) inner.appendChild(makeCard(item));
+      section.appendChild(inner);
+      frag.appendChild(section);
+    });
     grid.appendChild(frag);
+  }
+
+  function selectGroup(g) {
+    for (const it of g.items || []) state.selected.add(it.path);
+    renderGrid();
+    updateToolbar();
   }
 
   function toggleSelect(path) {
@@ -146,13 +282,13 @@
   }
 
   function selectAllOnPage() {
-    for (const item of state.items) state.selected.add(item.path);
+    for (const p of pagePaths()) state.selected.add(p);
     renderGrid();
     updateToolbar();
   }
 
   function clearSelectionOnPage() {
-    for (const item of state.items) state.selected.delete(item.path);
+    for (const p of pagePaths()) state.selected.delete(p);
     renderGrid();
     updateToolbar();
   }
@@ -175,6 +311,7 @@
       const cfg = await api("/api/config");
       state.keepLabel = cfg.keep_label || "Keepers";
       state.appTitle = cfg.app_title || "Invoke Library";
+      if (cfg.lookalike_hamming != null) state.lookalikeHamming = cfg.lookalike_hamming;
       document.title = state.appTitle;
       const titleEl = $("#app-title");
       if (titleEl) titleEl.textContent = state.appTitle;
@@ -190,7 +327,16 @@
   async function loadImages() {
     statusLine.textContent = "Loading…";
     try {
-      const kindQ = state.kindFilter && state.kindFilter !== "all" ? `&kind=${encodeURIComponent(state.kindFilter)}` : "";
+      if (state.kindFilter === "lookalikes") {
+        await loadLookalikes();
+        return;
+      }
+      const pager = $("#pager");
+      if (pager) pager.style.display = "";
+      const kindQ =
+        state.kindFilter && state.kindFilter !== "all"
+          ? `&kind=${encodeURIComponent(state.kindFilter)}`
+          : "";
       const data = await api(`/api/images?page=${state.page}&limit=${state.limit}${kindQ}`);
       state.items = data.items || [];
       state.total = data.total || 0;
@@ -212,6 +358,30 @@
     }
   }
 
+  async function loadLookalikes() {
+    const pager = $("#pager");
+    if (pager) pager.style.display = "none";
+    statusLine.textContent = "Computing lookalikes…";
+    const data = await api(`/api/lookalikes?hamming=${encodeURIComponent(state.lookalikeHamming)}`);
+    state.lookalikeGroups = data.groups || [];
+    state.lookalikeStats = data.stats || null;
+    if (data.hamming != null) state.lookalikeHamming = data.hamming;
+    // Refresh kind counts so Delete all inputs stays accurate
+    try {
+      const countsData = await api(`/api/images?page=1&limit=1`);
+      if (countsData.counts) state.kindCounts = countsData.counts;
+    } catch (_) {
+      /* ignore */
+    }
+    updateKindChips();
+    const stats = state.lookalikeStats || {};
+    const mixed = stats.mixed_groups != null ? stats.mixed_groups : state.lookalikeGroups.filter((g) => g.mixed).length;
+    pageInfo.textContent = `${state.lookalikeGroups.length} lookalike groups · ${mixed} mixed input/output · Hamming ≤ ${state.lookalikeHamming}`;
+    statusLine.textContent = "";
+    renderGrid();
+    updateToolbar();
+  }
+
   function openLightbox(path) {
     const box = $("#lightbox");
     const img = $("#lightbox-img");
@@ -228,14 +398,62 @@
     $("#lightbox-img").src = "";
   }
 
+  function resetStrongConfirm() {
+    state.strongConfirmOk = false;
+    const gate = $("#confirm-gate");
+    const chk = $("#chk-understand");
+    const typed = $("#confirm-type");
+    if (chk) chk.checked = false;
+    if (typed) typed.value = "";
+    if (gate) gate.hidden = true;
+    updateConfirmEnabled();
+  }
+
+  function showStrongConfirmGate() {
+    const gate = $("#confirm-gate");
+    if (gate) gate.hidden = false;
+    const chk = $("#chk-understand");
+    const typed = $("#confirm-type");
+    if (chk) chk.checked = false;
+    if (typed) typed.value = "";
+    state.strongConfirmOk = false;
+    updateConfirmEnabled();
+  }
+
+  function updateConfirmEnabled() {
+    const confirm = $("#btn-confirm");
+    if (!confirm) return;
+    if (state.bulkRunning) {
+      confirm.disabled = true;
+      return;
+    }
+    const needsGate =
+      state.action === "delete-all-inputs" ||
+      state.action === "delete-lookalike-inputs" ||
+      state.action === "delete-paths";
+    if (!needsGate) {
+      confirm.disabled = false;
+      return;
+    }
+    const chk = $("#chk-understand");
+    const typed = $("#confirm-type");
+    const typedOk = ((typed && typed.value) || "").trim() === "DELETE";
+    const checkOk = !!(chk && chk.checked);
+    state.strongConfirmOk = typedOk || checkOk;
+    confirm.disabled = !state.strongConfirmOk;
+  }
+
   function openModal(action) {
     state.action = action;
+    state.pendingPaths = null;
     const backdrop = $("#modal");
     const confirmOnly = $("#confirm-only");
     const keepControls = $("#keep-controls");
     const title = $("#modal-title");
     const desc = $("#modal-desc");
     const n = state.selected.size;
+    resetProgressPanel();
+    resetStrongConfirm();
 
     if (action === "delete") {
       title.textContent = "Delete via InvokeAI";
@@ -244,6 +462,29 @@
       keepControls.style.display = "none";
       $("#btn-confirm").className = "danger";
       $("#btn-confirm").textContent = "Delete";
+      updateConfirmEnabled();
+    } else if (action === "delete-all-inputs") {
+      const count = (state.kindCounts && state.kindCounts.input) || 0;
+      title.textContent = "Delete all inputs";
+      desc.textContent =
+        `Permanently delete every image classified as an input (uploads, control/mask/user assets, etc.) through the InvokeAI API — the same classification as the Inputs filter. Outputs are not touched. This cannot be undone.` +
+        (count ? ` About ${count} input(s) will be deleted.` : "");
+      confirmOnly.style.display = "block";
+      keepControls.style.display = "none";
+      $("#btn-confirm").className = "danger";
+      $("#btn-confirm").textContent = "Delete all inputs";
+      showStrongConfirmGate();
+    } else if (action === "delete-lookalike-inputs") {
+      const count = countLookalikeMixedInputs();
+      title.textContent = "Delete inputs in lookalike groups";
+      desc.textContent =
+        `In mixed input+output lookalike groups, delete only the Input-classified twins via InvokeAI and keep the Outputs. Usual case: you already have the generated copy. This cannot be undone.` +
+        (count ? ` ${count} input(s) across mixed groups.` : "");
+      confirmOnly.style.display = "block";
+      keepControls.style.display = "none";
+      $("#btn-confirm").className = "danger";
+      $("#btn-confirm").textContent = "Delete lookalike inputs";
+      showStrongConfirmGate();
     } else {
       title.textContent = action === "move" ? `Move to ${state.keepLabel}` : `Copy to ${state.keepLabel}`;
       desc.textContent =
@@ -257,10 +498,27 @@
       state.folderFilter = "";
       const filterEl = $("#folder-filter");
       if (filterEl) filterEl.value = "";
-      resetProgressPanel();
-      // Reuse in-memory folder list when warm; first open / force still network-loads.
+      updateConfirmEnabled();
       loadFolders({ force: false });
     }
+    backdrop.classList.add("open");
+  }
+
+  function openDeletePathsModal(paths, message) {
+    state.action = "delete-paths";
+    state.pendingPaths = paths.slice();
+    const backdrop = $("#modal");
+    const confirmOnly = $("#confirm-only");
+    const keepControls = $("#keep-controls");
+    resetProgressPanel();
+    resetStrongConfirm();
+    $("#modal-title").textContent = "Delete via InvokeAI";
+    $("#modal-desc").textContent = message || `Permanently delete ${paths.length} image(s) via InvokeAI.`;
+    confirmOnly.style.display = "block";
+    keepControls.style.display = "none";
+    $("#btn-confirm").className = "danger";
+    $("#btn-confirm").textContent = "Delete";
+    showStrongConfirmGate();
     backdrop.classList.add("open");
   }
 
@@ -268,7 +526,9 @@
     if (state.bulkRunning) return;
     $("#modal").classList.remove("open");
     state.action = null;
+    state.pendingPaths = null;
     resetProgressPanel();
+    resetStrongConfirm();
   }
 
   function filteredFolders() {
@@ -392,9 +652,7 @@
     $("#progress-text").textContent = `${d} / ${t}`;
     if (current != null) $("#progress-current").textContent = current;
     if (errors != null) {
-      $("#progress-errors").textContent = errors
-        ? `${errors} failed (continued with remaining)`
-        : "";
+      $("#progress-errors").textContent = errors ? `${errors} failed (continued with remaining)` : "";
     }
   }
 
@@ -402,7 +660,7 @@
     state.bulkRunning = running;
     const confirm = $("#btn-confirm");
     const cancel = $("#btn-cancel");
-    if (confirm) confirm.disabled = running;
+    if (confirm) confirm.disabled = running || (needsStrongConfirm() && !state.strongConfirmOk);
     if (cancel) cancel.disabled = running;
     const keep = $("#keep-controls");
     if (keep) {
@@ -410,9 +668,23 @@
         el.disabled = running;
       });
     }
+    const gate = $("#confirm-gate");
+    if (gate) {
+      gate.querySelectorAll("input").forEach((el) => {
+        el.disabled = running;
+      });
+    }
+    updateFilterActionButtons();
   }
 
-  /** Yield so the browser can paint between sequential awaits. */
+  function needsStrongConfirm() {
+    return (
+      state.action === "delete-all-inputs" ||
+      state.action === "delete-lookalike-inputs" ||
+      state.action === "delete-paths"
+    );
+  }
+
   function yieldToUi() {
     return new Promise((resolve) => {
       requestAnimationFrame(() => setTimeout(resolve, 0));
@@ -426,12 +698,115 @@
     try {
       await api("/api/keepers/folders", { method: "POST", body: JSON.stringify({ name }) });
       input.value = "";
-      // Server invalidates/rebuilds cache on create; force client reload.
       await loadFolders({ force: true });
       selectFolder(name);
       toast(`Created folder “${name}”`, "ok");
     } catch (err) {
       toast(err.message, "error");
+    }
+  }
+
+  async function fetchAllInputPaths() {
+    const data = await api("/api/images/inputs");
+    return (data.items || []).map((it) => it.path).filter(Boolean);
+  }
+
+  async function runDeletePaths(paths, { successToast } = {}) {
+    const total = paths.length;
+    let done = 0;
+    let errors = 0;
+    const failed = [];
+
+    setBulkUiRunning(true);
+    const confirmOnly = $("#confirm-only");
+    if (confirmOnly) confirmOnly.style.display = "none";
+    const gate = $("#confirm-gate");
+    if (gate) gate.hidden = true;
+
+    updateProgress({ label: "Deleting…", done: 0, total, current: "", errors: 0 });
+
+    try {
+      for (let i = 0; i < paths.length; i += DELETE_BATCH) {
+        const batch = paths.slice(i, i + DELETE_BATCH);
+        const label = batch.map(basename).join(", ");
+        updateProgress({
+          label: "Deleting…",
+          done,
+          total,
+          current: label,
+          errors,
+        });
+        await yieldToUi();
+        try {
+          await api("/api/actions/delete", {
+            method: "POST",
+            body: JSON.stringify({ paths: batch }),
+          });
+          done += batch.length;
+          for (const path of batch) state.selected.delete(path);
+        } catch (err) {
+          // Fall back to one-at-a-time so a single bad file doesn't fail the whole batch
+          for (const path of batch) {
+            const name = basename(path);
+            try {
+              await api("/api/actions/delete", {
+                method: "POST",
+                body: JSON.stringify({ paths: [path] }),
+              });
+              done += 1;
+              state.selected.delete(path);
+            } catch (err2) {
+              errors += 1;
+              failed.push({ path, message: err2.message || "failed" });
+              updateProgress({
+                label: "Deleting…",
+                done,
+                total,
+                current: `${name} — ${err2.message || "error"}`,
+                errors,
+              });
+              await yieldToUi();
+            }
+          }
+        }
+        updateProgress({ label: "Deleting…", done, total, current: label, errors });
+      }
+
+      updateProgress({
+        label: errors ? "Deleting finished with errors" : "Deleting complete",
+        done,
+        total,
+        current: "",
+        errors,
+      });
+      await yieldToUi();
+
+      if (errors === 0) {
+        toast(successToast || `Deleted ${done} via InvokeAI`, "ok");
+        setBulkUiRunning(false);
+        closeModal();
+      } else {
+        const first = failed[0];
+        toast(
+          `${done} ok, ${errors} failed` +
+            (first ? ` — first: ${basename(first.path)}: ${first.message}` : ""),
+          "error"
+        );
+        updateToolbar();
+        renderGrid();
+        state.bulkRunning = false;
+        const cancel = $("#btn-cancel");
+        if (cancel) cancel.disabled = false;
+        const confirm = $("#btn-confirm");
+        if (confirm) confirm.disabled = true;
+      }
+      await loadImages();
+    } catch (err) {
+      toast(err.message || "Bulk delete failed", "error");
+      state.bulkRunning = false;
+      setBulkUiRunning(false);
+    } finally {
+      if (errors === 0) setBulkUiRunning(false);
     }
   }
 
@@ -441,8 +816,59 @@
    * summarizes at the end.
    */
   async function confirmAction() {
+    if (!state.action || state.bulkRunning) return;
+
+    if (needsStrongConfirm() && !state.strongConfirmOk) {
+      toast("Confirm by checking the box or typing DELETE", "error");
+      return;
+    }
+
+    if (state.action === "delete-all-inputs") {
+      try {
+        updateProgress({ label: "Listing all inputs…", done: 0, total: 0, current: "", errors: 0 });
+        setBulkUiRunning(true);
+        const paths = await fetchAllInputPaths();
+        if (!paths.length) {
+          toast("No inputs found", "error");
+          setBulkUiRunning(false);
+          closeModal();
+          return;
+        }
+        await runDeletePaths(paths, { successToast: `Deleted ${paths.length} inputs via InvokeAI` });
+      } catch (err) {
+        toast(err.message || "Failed to list inputs", "error");
+        setBulkUiRunning(false);
+      }
+      return;
+    }
+
+    if (state.action === "delete-lookalike-inputs") {
+      const paths = [];
+      for (const g of state.lookalikeGroups) {
+        if (!g.mixed) continue;
+        for (const it of g.items || []) {
+          if (it.kind === "input") paths.push(it.path);
+        }
+      }
+      if (!paths.length) {
+        toast("No lookalike inputs to delete", "error");
+        return;
+      }
+      await runDeletePaths(paths, {
+        successToast: `Deleted ${paths.length} lookalike inputs via InvokeAI`,
+      });
+      return;
+    }
+
+    if (state.action === "delete-paths") {
+      const paths = state.pendingPaths || [];
+      if (!paths.length) return;
+      await runDeletePaths(paths);
+      return;
+    }
+
     const paths = [...state.selected];
-    if (!paths.length || !state.action || state.bulkRunning) return;
+    if (!paths.length) return;
 
     let dest = "";
     if (state.action !== "delete") {
@@ -459,8 +885,7 @@
     let errors = 0;
     const failed = [];
 
-    const verb =
-      action === "delete" ? "Deleting" : action === "move" ? "Moving" : "Copying";
+    const verb = action === "delete" ? "Deleting" : action === "move" ? "Moving" : "Copying";
     const endpoint =
       action === "delete"
         ? "/api/actions/delete"
@@ -469,7 +894,6 @@
           : "/api/actions/copy";
 
     setBulkUiRunning(true);
-    // Hide folder picker noise while running keep actions; delete already hides it.
     if (action !== "delete") {
       const keep = $("#keep-controls");
       if (keep) keep.style.display = "none";
@@ -477,35 +901,20 @@
     const confirmOnly = $("#confirm-only");
     if (action === "delete" && confirmOnly) confirmOnly.style.display = "none";
 
-    updateProgress({
-      label: `${verb}…`,
-      done: 0,
-      total,
-      current: "",
-      errors: 0,
-    });
+    updateProgress({ label: `${verb}…`, done: 0, total, current: "", errors: 0 });
 
     try {
       for (let i = 0; i < paths.length; i++) {
         const path = paths[i];
         const name = basename(path);
-        updateProgress({
-          label: `${verb}…`,
-          done,
-          total,
-          current: name,
-          errors,
-        });
+        updateProgress({ label: `${verb}…`, done, total, current: name, errors });
         await yieldToUi();
 
         try {
           const body =
-            action === "delete"
-              ? { paths: [path] }
-              : { paths: [path], dest_folder: dest };
+            action === "delete" ? { paths: [path] } : { paths: [path], dest_folder: dest };
           await api(endpoint, { method: "POST", body: JSON.stringify(body) });
           done += 1;
-          // Drop from selection as each succeeds so a partial failure leaves the rest selected.
           state.selected.delete(path);
         } catch (err) {
           errors += 1;
@@ -520,13 +929,7 @@
           await yieldToUi();
         }
 
-        updateProgress({
-          label: `${verb}…`,
-          done,
-          total,
-          current: name,
-          errors,
-        });
+        updateProgress({ label: `${verb}…`, done, total, current: name, errors });
       }
 
       updateProgress({
@@ -559,7 +962,6 @@
         );
         updateToolbar();
         renderGrid();
-        // Re-enable cancel so user can dismiss; keep confirm disabled until modal closed.
         state.bulkRunning = false;
         const cancel = $("#btn-cancel");
         if (cancel) cancel.disabled = false;
@@ -578,7 +980,6 @@
     }
   }
 
-
   function updateKindChips() {
     const root = $("#kind-filter");
     if (!root) return;
@@ -586,10 +987,15 @@
     for (const btn of root.querySelectorAll(".kind-chip")) {
       const k = btn.dataset.kind;
       btn.classList.toggle("active", k === state.kindFilter);
-      let label = k === "all" ? "All" : k === "output" ? "Outputs" : "Inputs";
+      let label =
+        k === "all" ? "All" : k === "output" ? "Outputs" : k === "input" ? "Inputs" : "Lookalikes";
       if (k === "all" && c.all != null) label = `All (${c.all})`;
       else if (k === "output" && c.output != null) label = `Outputs (${c.output})`;
       else if (k === "input" && c.input != null) label = `Inputs (${c.input})`;
+      else if (k === "lookalikes" && state.lookalikeGroups) {
+        const n = state.kindFilter === "lookalikes" ? state.lookalikeGroups.length : null;
+        if (n != null) label = `Lookalikes (${n})`;
+      }
       btn.textContent = label;
     }
   }
@@ -605,6 +1011,7 @@
         state.kindFilter = k;
         state.page = 1;
         updateKindChips();
+        updateFilterActionButtons();
         loadImages();
       });
     }
@@ -612,7 +1019,6 @@
     const pageChk = $("#chk-select-all-page");
     if (pageChk) {
       pageChk.addEventListener("click", (e) => {
-        // Use click (not change) so we can decide from pre-toggle state via indeterminate/checked.
         e.preventDefault();
         toggleSelectAllOnPage();
       });
@@ -621,6 +1027,14 @@
     $("#btn-delete").addEventListener("click", () => openModal("delete"));
     $("#btn-copy").addEventListener("click", () => openModal("copy"));
     $("#btn-move").addEventListener("click", () => openModal("move"));
+    const btnDelAll = $("#btn-delete-all-inputs");
+    if (btnDelAll) btnDelAll.addEventListener("click", () => openModal("delete-all-inputs"));
+    const btnDelLook = $("#btn-delete-lookalike-inputs");
+    if (btnDelLook) btnDelLook.addEventListener("click", () => openModal("delete-lookalike-inputs"));
+    const chkUnderstand = $("#chk-understand");
+    if (chkUnderstand) chkUnderstand.addEventListener("change", updateConfirmEnabled);
+    const confirmType = $("#confirm-type");
+    if (confirmType) confirmType.addEventListener("input", updateConfirmEnabled);
     $("#btn-prev").addEventListener("click", () => {
       if (state.page > 1) {
         state.page -= 1;
@@ -665,12 +1079,14 @@
         if (!state.bulkRunning) closeModal();
         closeLightbox();
       }
-      // Ctrl/Cmd+A: select all on current page when focus is in the grid (avoid fighting browser elsewhere).
       if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
         const t = e.target;
         const tag = (t && t.tagName) || "";
         const onPageChk = pageChk && (t === pageChk || (t.closest && t.closest(".page-select-label")));
-        if (!onPageChk && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable))) {
+        if (
+          !onPageChk &&
+          (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable))
+        ) {
           return;
         }
         if ($("#modal") && $("#modal").classList.contains("open")) return;

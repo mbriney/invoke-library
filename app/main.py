@@ -15,6 +15,7 @@ import secrets
 from app.config import Settings, get_settings
 from app.folders_cache import bump_after_mutate, get_folders, invalidate as invalidate_folders_cache
 from app.images import get_or_make_thumb, list_images, resolve_output_image
+from app.lookalikes import list_input_refs, lookalike_payload
 from app.invoke_client import InvokeAPIError, InvokeClient
 from app.paths import PathEscapeError, ensure_dir, folder_name_ok, folder_relpath_ok, resolve_under, safe_relpath
 
@@ -104,6 +105,7 @@ async def api_config(_: AuthDep, settings: SettingsDep) -> dict:
         "app_title": settings.app_title,
         "keep_label": settings.keep_label,
         "image_subdir": settings.image_subdir,
+        "lookalike_hamming": settings.lookalike_hamming,
     }
 
 
@@ -125,6 +127,50 @@ async def api_images(
     except Exception:
         logger.debug("Invoke DTO map unavailable; using filesystem/metadata classification", exc_info=True)
     return list_images(settings, page=page, limit=limit, kind=kind, dto_by_name=dto_map or None)
+
+
+@app.get("/api/images/inputs")
+async def api_list_inputs(_: AuthDep, settings: SettingsDep) -> dict:
+    """All images classified as input (same rules as Inputs filter), for mass-delete."""
+    dto_map: dict = {}
+    client = InvokeClient(settings)
+    try:
+        dto_map = await client.build_image_dto_map()
+    except Exception:
+        logger.debug("Invoke DTO map unavailable for inputs list", exc_info=True)
+    return list_input_refs(settings, dto_by_name=dto_map or None)
+
+
+@app.get("/api/lookalikes")
+async def api_lookalikes(
+    _: AuthDep,
+    settings: SettingsDep,
+    hamming: int | None = Query(
+        None,
+        ge=0,
+        le=32,
+        description="Override LOOKALIKE_HAMMING for this request",
+    ),
+    mixed_only: int = Query(
+        0,
+        ge=0,
+        le=1,
+        description="1 = only groups that mix input + output",
+    ),
+) -> dict:
+    """Perceptual near-duplicate groups (aHash) with kind labels."""
+    dto_map: dict = {}
+    client = InvokeClient(settings)
+    try:
+        dto_map = await client.build_image_dto_map()
+    except Exception:
+        logger.debug("Invoke DTO map unavailable for lookalikes", exc_info=True)
+    return lookalike_payload(
+        settings,
+        dto_by_name=dto_map or None,
+        hamming=hamming,
+        mixed_only=bool(mixed_only),
+    )
 
 
 @app.get("/api/images/thumb")

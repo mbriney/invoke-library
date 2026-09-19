@@ -29,6 +29,11 @@
       <button type="button" class="kind-chip active" data-kind="all">All</button>
       <button type="button" class="kind-chip" data-kind="output">Outputs</button>
       <button type="button" class="kind-chip" data-kind="input">Inputs</button>
+      <button type="button" class="kind-chip" data-kind="lookalikes">Lookalikes</button>
+    </div>
+    <div class="filter-actions" id="filter-actions">
+      <button type="button" class="danger" id="btn-delete-all-inputs" title="Delete every image classified as Input via InvokeAI">Delete all inputs</button>
+      <button type="button" class="danger" id="btn-delete-lookalike-inputs" hidden title="In mixed lookalike groups, delete Input twins and keep Outputs">Delete inputs in lookalike groups</button>
     </div>
     <div class="page-select-row" id="page-select-row">
       <label class="page-select-label" for="chk-select-all-page">
@@ -37,7 +42,7 @@
       </label>
     </div>
     <div id="grid" class="grid" tabindex="0" aria-label="Image grid"></div>
-    <div class="pager">
+    <div class="pager" id="pager">
       <button type="button" id="btn-prev" disabled>Prev</button>
       <button type="button" id="btn-next" disabled>Next</button>
     </div>
@@ -47,7 +52,16 @@
     <div class="modal">
       <h2 id="modal-title">Confirm</h2>
       <p id="modal-desc"></p>
-      <div id="confirm-only" style="display:none"></div>
+      <div id="confirm-only" style="display:none">
+        <div id="confirm-gate" class="confirm-gate" hidden>
+          <label class="confirm-understand">
+            <input type="checkbox" id="chk-understand" />
+            <span>I understand this cannot be undone</span>
+          </label>
+          <label for="confirm-type">Or type <strong>DELETE</strong> to enable Confirm</label>
+          <input type="text" id="confirm-type" autocomplete="off" spellcheck="false" placeholder="DELETE" />
+        </div>
+      </div>
       <div id="keep-controls" style="display:none">
         <h2 id="modal-keep-title" class="meta" style="font-size:0.95rem;font-weight:600;margin-bottom:0.5rem">Send to {{KEEP_LABEL}}</h2>
         <label for="folder-filter">Filter folders</label>

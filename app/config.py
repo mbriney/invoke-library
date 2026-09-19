@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     thumb_max_size: int = 320
     thumb_quality: int = 82
 
+    # Perceptual lookalike grouping (aHash Hamming distance threshold)
+    lookalike_hamming: int = 8
+
     @model_validator(mode="after")
     def _resolve_keep_and_thumbs(self) -> Settings:
         if self.keep_dir is None:

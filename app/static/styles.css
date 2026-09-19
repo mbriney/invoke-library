@@ -83,6 +83,14 @@ button.danger:hover:not(:disabled) { border-color: var(--danger); }
   font-variant-numeric: tabular-nums;
 }
 
+.btn-label-short { display: none; }
+.btn-label-long { display: inline; }
+@media (max-width: 560px) {
+  .btn-label-long { display: none; }
+  .btn-label-short { display: inline; }
+}
+
+
 main { padding: 1rem; max-width: 1400px; margin: 0 auto; }
 
 .grid {
@@ -319,6 +327,44 @@ main { padding: 1rem; max-width: 1400px; margin: 0 auto; }
   margin: 0 0 0.85rem;
   align-items: center;
 }
+
+.page-select-row {
+  display: flex;
+  align-items: center;
+  margin: 0 0 0.75rem;
+  min-height: 1.75rem;
+}
+.page-select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.page-select-label input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--accent-2);
+  cursor: pointer;
+}
+.page-select-label input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.page-select-label span {
+  color: var(--text);
+}
+#grid:focus {
+  outline: none;
+}
+#grid:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
 .kind-chip {
   border-radius: 999px;
   padding: 0.35rem 0.85rem;

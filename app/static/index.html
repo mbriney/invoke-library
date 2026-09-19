@@ -14,7 +14,7 @@
     </div>
     <div class="toolbar">
       <span class="sel-count" id="sel-count">None</span>
-      <button type="button" id="btn-select-all">Select page</button>
+      <button type="button" id="btn-select-all" title="Select all images on this page"><span class="btn-label-long">Select all on page</span><span class="btn-label-short">Select all</span></button>
       <button type="button" id="btn-clear">Clear</button>
       <button type="button" id="btn-refresh">Refresh</button>
       <button type="button" class="danger" id="btn-delete" disabled>Delete</button>
@@ -30,7 +30,13 @@
       <button type="button" class="kind-chip" data-kind="output">Outputs</button>
       <button type="button" class="kind-chip" data-kind="input">Inputs</button>
     </div>
-    <div id="grid" class="grid"></div>
+    <div class="page-select-row" id="page-select-row">
+      <label class="page-select-label" for="chk-select-all-page">
+        <input type="checkbox" id="chk-select-all-page" />
+        <span>Select all on this page</span>
+      </label>
+    </div>
+    <div id="grid" class="grid" tabindex="0" aria-label="Image grid"></div>
     <div class="pager">
       <button type="button" id="btn-prev" disabled>Prev</button>
       <button type="button" id="btn-next" disabled>Next</button>

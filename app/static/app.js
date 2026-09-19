@@ -60,12 +60,36 @@
     return data;
   }
 
+  function pagePaths() {
+    return state.items.map((item) => item.path);
+  }
+
+  function pageSelectionState() {
+    const paths = pagePaths();
+    if (!paths.length) return { selected: 0, total: 0 };
+    let selected = 0;
+    for (const p of paths) {
+      if (state.selected.has(p)) selected += 1;
+    }
+    return { selected, total: paths.length };
+  }
+
+  function updatePageSelectCheckbox() {
+    const chk = $("#chk-select-all-page");
+    if (!chk) return;
+    const { selected, total } = pageSelectionState();
+    chk.disabled = total === 0;
+    chk.indeterminate = selected > 0 && selected < total;
+    chk.checked = total > 0 && selected === total;
+  }
+
   function updateToolbar() {
     const n = state.selected.size;
     selCount.textContent = n ? `${n} selected` : "None";
     $("#btn-delete").disabled = n === 0;
     $("#btn-copy").disabled = n === 0;
     $("#btn-move").disabled = n === 0;
+    updatePageSelectCheckbox();
   }
 
   function renderGrid() {
@@ -99,6 +123,7 @@
           return;
         }
         toggleSelect(item.path);
+        try { grid.focus({ preventScroll: true }); } catch (_) { grid.focus(); }
       });
       const zoomBtn = card.querySelector(".zoom-btn");
       zoomBtn.addEventListener("click", (e) => {
@@ -122,6 +147,19 @@
     for (const item of state.items) state.selected.add(item.path);
     renderGrid();
     updateToolbar();
+  }
+
+  function clearSelectionOnPage() {
+    for (const item of state.items) state.selected.delete(item.path);
+    renderGrid();
+    updateToolbar();
+  }
+
+  function toggleSelectAllOnPage() {
+    const { selected, total } = pageSelectionState();
+    if (total === 0) return;
+    if (selected === total) clearSelectionOnPage();
+    else selectAllOnPage();
   }
 
   function clearSelection() {
@@ -396,6 +434,14 @@
       });
     }
     $("#btn-select-all").addEventListener("click", selectAllOnPage);
+    const pageChk = $("#chk-select-all-page");
+    if (pageChk) {
+      pageChk.addEventListener("click", (e) => {
+        // Use click (not change) so we can decide from pre-toggle state via indeterminate/checked.
+        e.preventDefault();
+        toggleSelectAllOnPage();
+      });
+    }
     $("#btn-clear").addEventListener("click", clearSelection);
     $("#btn-delete").addEventListener("click", () => openModal("delete"));
     $("#btn-copy").addEventListener("click", () => openModal("copy"));
@@ -439,6 +485,21 @@
       if (e.key === "Escape") {
         closeModal();
         closeLightbox();
+      }
+      // Ctrl/Cmd+A: select all on current page when focus is in the grid (avoid fighting browser elsewhere).
+      if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+        const t = e.target;
+        const tag = (t && t.tagName) || "";
+        const onPageChk = pageChk && (t === pageChk || (t.closest && t.closest(".page-select-label")));
+        if (!onPageChk && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable))) {
+          return;
+        }
+        if ($("#modal") && $("#modal").classList.contains("open")) return;
+        if ($("#lightbox") && $("#lightbox").classList.contains("open")) return;
+        const inGrid = t === grid || grid.contains(t);
+        if (!inGrid && !onPageChk) return;
+        e.preventDefault();
+        selectAllOnPage();
       }
     });
   }

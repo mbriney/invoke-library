@@ -8,7 +8,7 @@ Works anywhere you can run Docker: Linux NAS (Unraid, TrueNAS), a homelab box, o
 
 ## Features
 
-- Mobile-friendly thumbnail grid with multi-select and per-tile **zoom** (full-resolution lightbox)
+- Mobile-friendly thumbnail grid with multi-select (**select all on page**), and per-tile **zoom** (full-resolution lightbox)
 - **Input vs Output** badges and All / Outputs / Inputs filter
 - Delete via InvokeAI `POST /api/v1/images/delete` (never silent filesystem-only delete)
 - Copy or move selected images into configurable **Keepers** folders (nested folders + searchable picker)

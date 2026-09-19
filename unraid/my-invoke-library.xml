@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>invoke-library</Name>
+  <Repository>ghcr.io/mbriney/invoke-library:latest</Repository>
+  <Registry>https://ghcr.io/mbriney/invoke-library</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mbriney/invoke-library/issues</Support>
+  <Project>https://github.com/mbriney/invoke-library</Project>
+  <Overview>Invoke Library — browse InvokeAI outputs, multi-select delete via Invoke API, and copy/move keepers to an archive share.</Overview>
+  <Category>MediaApp:Photos Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/my-invoke-library.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/invoke-ai/InvokeAI/main/invokeai/frontend/web/public/assets/images/invoke-favicon.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <Config Name="Host Port" Target="8080" Default="8091" Mode="tcp" Description="Host port mapped to container 8080" Type="Port" Display="always" Required="true" Mask="false">8091</Config>
+  <Config Name="Invoke outputs (RO)" Target="/data/invoke-outputs" Default="/mnt/user/appdata/invokeai/outputs" Mode="ro" Description="InvokeAI outputs directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/invokeai/outputs</Config>
+  <Config Name="Keepers / Friends" Target="/data/keepers" Default="/mnt/user/Friends" Mode="rw" Description="Archive share for kept images" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Friends</Config>
+  <Config Name="App config" Target="/data/config" Default="/mnt/user/appdata/invoke-library" Mode="rw" Description="Config and thumbnail cache" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/invoke-library</Config>
+  <Config Name="INVOKE_BASE_URL" Target="INVOKE_BASE_URL" Default="http://192.168.1.12:9091" Description="InvokeAI base URL (host LAN IP preferred on bridge)" Type="Variable" Display="always" Required="true" Mask="false">http://192.168.1.12:9091</Config>
+  <Config Name="INVOKE_API_TOKEN" Target="INVOKE_API_TOKEN" Default="" Description="Bearer JWT if multiuser_enabled; leave empty if single-user" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="KEEP_DIR" Target="KEEP_DIR" Default="/data/keepers" Description="Keepers path inside container" Type="Variable" Display="advanced" Required="false" Mask="false">/data/keepers</Config>
+  <Config Name="KEEP_LABEL" Target="KEEP_LABEL" Default="Friends" Description="UI label for keepers destination" Type="Variable" Display="always" Required="false" Mask="false">Friends</Config>
+  <Config Name="APP_TITLE" Target="APP_TITLE" Default="Invoke Library" Description="Browser title" Type="Variable" Display="always" Required="false" Mask="false">Invoke Library</Config>
+  <Config Name="INVOKE_OUTPUTS_DIR" Target="INVOKE_OUTPUTS_DIR" Default="/data/invoke-outputs" Description="Outputs path inside container" Type="Variable" Display="advanced" Required="false" Mask="false">/data/invoke-outputs</Config>
+  <Config Name="CONFIG_DIR" Target="CONFIG_DIR" Default="/data/config" Description="Config path inside container" Type="Variable" Display="advanced" Required="false" Mask="false">/data/config</Config>
+  <Config Name="IMAGE_SUBDIR" Target="IMAGE_SUBDIR" Default="images" Description="Preferred subfolder under outputs" Type="Variable" Display="advanced" Required="false" Mask="false">images</Config>
+</Container>

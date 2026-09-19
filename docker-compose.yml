@@ -1,0 +1,31 @@
+# Generic compose — override paths/env for your host.
+# See docker-compose.example.yml and README for Unraid / Synology / bare Docker notes.
+
+services:
+  invoke-library:
+    build: .
+    image: invoke-library:latest
+    container_name: invoke-library
+    ports:
+      - "${HOST_PORT:-8091}:8080"
+    environment:
+      INVOKE_BASE_URL: ${INVOKE_BASE_URL:-http://host.docker.internal:9090}
+      INVOKE_API_TOKEN: ${INVOKE_API_TOKEN:-}
+      INVOKE_API_KEY: ${INVOKE_API_KEY:-}
+      INVOKE_OUTPUTS_DIR: /data/invoke-outputs
+      KEEP_DIR: /data/keepers
+      CONFIG_DIR: /data/config
+      IMAGE_SUBDIR: ${IMAGE_SUBDIR:-images}
+      APP_TITLE: ${APP_TITLE:-Invoke Library}
+      KEEP_LABEL: ${KEEP_LABEL:-Keepers}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:-}
+      PORT: "8080"
+    volumes:
+      # Mount your InvokeAI outputs (read-only recommended)
+      - ${INVOKE_OUTPUTS_HOST:-./data/outputs}:/data/invoke-outputs:ro
+      # Mount your keepers/archive share (read-write)
+      - ${KEEP_HOST:-./data/keepers}:/data/keepers
+      # Optional thumb/config cache
+      - ${CONFIG_HOST:-./data/config}:/data/config
+    restart: unless-stopped

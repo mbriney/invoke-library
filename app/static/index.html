@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>{{APP_TITLE}}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="app-bar">
+    <div>
+      <h1 id="app-title">{{APP_TITLE}}</h1>
+      <div class="meta" id="page-info">Loading…</div>
+    </div>
+    <div class="toolbar">
+      <span class="sel-count" id="sel-count">None</span>
+      <button type="button" id="btn-select-all">Select page</button>
+      <button type="button" id="btn-clear">Clear</button>
+      <button type="button" id="btn-refresh">Refresh</button>
+      <button type="button" class="danger" id="btn-delete" disabled>Delete</button>
+      <button type="button" id="btn-copy" disabled>Copy to {{KEEP_LABEL}}</button>
+      <button type="button" class="primary" id="btn-move" disabled>Move to {{KEEP_LABEL}}</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="status-line" class="status-line"></div>
+    <div id="grid" class="grid"></div>
+    <div class="pager">
+      <button type="button" id="btn-prev" disabled>Prev</button>
+      <button type="button" id="btn-next" disabled>Next</button>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="modal" role="dialog" aria-modal="true">
+    <div class="modal">
+      <h2 id="modal-title">Confirm</h2>
+      <p id="modal-desc"></p>
+      <div id="confirm-only" style="display:none"></div>
+      <div id="keep-controls" style="display:none">
+        <h2 id="modal-keep-title" class="meta" style="font-size:0.95rem;font-weight:600;margin-bottom:0.5rem">Send to {{KEEP_LABEL}}</h2>
+        <label for="folder-select">Destination folder</label>
+        <select id="folder-select"></select>
+        <label for="new-folder">Or create folder</label>
+        <div class="new-folder-row">
+          <input type="text" id="new-folder" placeholder="New folder name" maxlength="200" />
+          <button type="button" id="btn-create-folder">Create</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="btn-cancel">Cancel</button>
+        <button type="button" class="primary" id="btn-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox">
+    <img id="lightbox-img" alt="Full image" />
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

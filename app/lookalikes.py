@@ -4,9 +4,9 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PIL import Image
 
@@ -16,9 +16,19 @@ from app.paths import ensure_dir, safe_relpath
 
 logger = logging.getLogger(__name__)
 
-CACHE_VERSION = 1
-HASH_SIZE = 8  # 64-bit average hash
+CACHE_VERSION = 2
+HASH_SIZE = 8  # 64-bit average / difference hash
 _CACHE_LOCK = threading.Lock()
+
+# Background lookalike scan job (process-wide)
+_job_lock = threading.Lock()
+_scanning = False
+_progress: dict[str, Any] = {"done": 0, "total": 0, "phase": "idle"}
+_last_payload: dict[str, Any] | None = None
+_last_items: list[HashedImage] | None = None  # type: ignore[name-defined]
+_last_error: str | None = None
+_last_finished_at: float | None = None
+_last_hash_stats: dict[str, int] | None = None
 
 
 @dataclass
@@ -30,7 +40,8 @@ class HashedImage:
     kind_source: str
     mtime: float
     size: int
-    phash: int
+    phash: int  # aHash
+    dhash: int = 0  # dHash (0 is a valid hash for flat images)
 
 
 def _cache_path(settings: Settings) -> Path:
@@ -51,8 +62,35 @@ def average_hash(path: Path, hash_size: int = HASH_SIZE) -> int:
     return bits
 
 
+def difference_hash(path: Path, hash_size: int = HASH_SIZE) -> int:
+    """64-bit difference hash (dHash): compare adjacent pixels on hash_size+1 width."""
+    with Image.open(path) as im:
+        gray = im.convert("L")
+        small = gray.resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
+        pixels = list(small.getdata())
+    bits = 0
+    bit = 0
+    for row in range(hash_size):
+        row_off = row * (hash_size + 1)
+        for col in range(hash_size):
+            left = pixels[row_off + col]
+            right = pixels[row_off + col + 1]
+            if left < right:
+                bits |= 1 << bit
+            bit += 1
+    return bits
+
+
 def hamming_distance(a: int, b: int) -> int:
     return (a ^ b).bit_count()
+
+
+def perceptual_distance(a: HashedImage, b: HashedImage) -> int:
+    """Min Hamming across aHash and dHash (dHash 0 is a valid hash for flat images)."""
+    return min(
+        hamming_distance(a.phash, b.phash),
+        hamming_distance(a.dhash, b.dhash),
+    )
 
 
 def _load_cache(settings: Settings) -> dict[str, Any]:
@@ -64,18 +102,23 @@ def _load_cache(settings: Settings) -> dict[str, Any]:
     except Exception:
         logger.warning("Corrupt phash cache at %s; rebuilding", path)
         return {"version": CACHE_VERSION, "entries": {}}
-    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+    if not isinstance(data, dict):
+        return {"version": CACHE_VERSION, "entries": {}}
+    # Accept v1 (ahash only) and v2 (ahash+dhash); migrate on write.
+    ver = data.get("version")
+    if ver not in (1, CACHE_VERSION):
         return {"version": CACHE_VERSION, "entries": {}}
     entries = data.get("entries")
     if not isinstance(entries, dict):
         entries = {}
-    return {"version": CACHE_VERSION, "entries": entries}
+    return {"version": int(ver), "entries": entries}
 
 
 def _save_cache(settings: Settings, cache: dict[str, Any]) -> None:
     ensure_dir(settings.config_dir)
     path = _cache_path(settings)
     tmp = path.with_suffix(".tmp")
+    cache = {**cache, "version": CACHE_VERSION}
     payload = json.dumps(cache, separators=(",", ":"))
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
@@ -108,10 +151,15 @@ def collect_hashed_images(
     settings: Settings,
     *,
     dto_by_name: dict[str, dict[str, Any]] | None = None,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> tuple[list[HashedImage], dict[str, int]]:
-    """Scan outputs, classify, compute/cached aHash. Returns items + cache stats."""
+    """Scan outputs, classify, compute/cached aHash+dHash. Returns items + cache stats."""
     root = settings.invoke_outputs_dir
     files = _scan_image_files(settings)
+    total_files = len(files)
+    if progress_cb:
+        progress_cb(0, total_files)
+
     with _CACHE_LOCK:
         cache = _load_cache(settings)
         entries: dict[str, Any] = dict(cache.get("entries") or {})
@@ -119,11 +167,13 @@ def collect_hashed_images(
         hashed: list[HashedImage] = []
         stats = {"total": 0, "cache_hits": 0, "computed": 0, "errors": 0}
 
-        for p in files:
+        for idx, p in enumerate(files):
             try:
                 st = p.stat()
             except OSError:
                 stats["errors"] += 1
+                if progress_cb:
+                    progress_cb(idx + 1, total_files)
                 continue
             rel = safe_relpath(p, root)
             live_keys.add(rel)
@@ -135,6 +185,7 @@ def collect_hashed_images(
 
             cached = entries.get(rel)
             phash: int | None = None
+            dhash: int | None = None
             if (
                 isinstance(cached, dict)
                 and cached.get("mtime") == st.st_mtime
@@ -142,18 +193,31 @@ def collect_hashed_images(
             ):
                 try:
                     phash = int(cached["hash"], 16)
+                    dhash_raw = cached.get("dhash")
+                    if isinstance(dhash_raw, str):
+                        dhash = int(dhash_raw, 16)
                     stats["cache_hits"] += 1
                 except ValueError:
                     phash = None
+                    dhash = None
 
-            if phash is None:
+            if phash is None or dhash is None:
                 try:
-                    phash = average_hash(p)
+                    if phash is None:
+                        phash = average_hash(p)
+                    if dhash is None:
+                        dhash = difference_hash(p)
                     stats["computed"] += 1
-                    entries[rel] = {"mtime": st.st_mtime, "hash": f"{phash:016x}"}
+                    entries[rel] = {
+                        "mtime": st.st_mtime,
+                        "hash": f"{phash:016x}",
+                        "dhash": f"{dhash:016x}",
+                    }
                 except Exception:
                     logger.debug("phash failed for %s", rel, exc_info=True)
                     stats["errors"] += 1
+                    if progress_cb:
+                        progress_cb(idx + 1, total_files)
                     continue
 
             hashed.append(
@@ -166,8 +230,11 @@ def collect_hashed_images(
                     mtime=st.st_mtime,
                     size=st.st_size,
                     phash=phash,
+                    dhash=dhash or 0,
                 )
             )
+            if progress_cb:
+                progress_cb(idx + 1, total_files)
 
         # Drop stale cache keys for deleted files (keep cache bounded)
         stale = [k for k in entries if k not in live_keys]
@@ -210,9 +277,9 @@ class _UnionFind:
 def group_lookalikes(
     items: list[HashedImage],
     *,
-    hamming: int = 8,
+    hamming: int = 14,
 ) -> list[list[HashedImage]]:
-    """Union-find groups where pairwise Hamming distance ≤ threshold."""
+    """Union-find groups where pairwise perceptual distance ≤ threshold."""
     n = len(items)
     if n < 2:
         return []
@@ -221,12 +288,11 @@ def group_lookalikes(
     # For 64-bit hashes and small libraries, full pairwise is fine up to a few thousand.
     if n <= 2500:
         for i in range(n):
-            hi = items[i].phash
             for j in range(i + 1, n):
-                if hamming_distance(hi, items[j].phash) <= hamming:
+                if perceptual_distance(items[i], items[j]) <= hamming:
                     uf.union(i, j)
     else:
-        # Prefix buckets (top 16 bits) + neighbor scan for large libs
+        # Prefix buckets (top 16 bits of aHash) + neighbor scan for large libs
         buckets: dict[int, list[int]] = {}
         for i, it in enumerate(items):
             key = it.phash >> 48
@@ -244,7 +310,7 @@ def group_lookalikes(
                     if pair in checked:
                         continue
                     checked.add(pair)
-                    if hamming_distance(items[i].phash, items[j].phash) <= hamming:
+                    if perceptual_distance(items[i], items[j]) <= hamming:
                         uf.union(i, j)
 
     clusters: dict[int, list[HashedImage]] = {}
@@ -255,7 +321,7 @@ def group_lookalikes(
     groups = [g for g in clusters.values() if len(g) >= 2]
     for g in groups:
         g.sort(key=lambda x: x.mtime, reverse=True)
-    # Mixed input+output first, then larger groups, then newest mtime in group
+
     def sort_key(g: list[HashedImage]) -> tuple:
         kinds = {x.kind for x in g}
         mixed = 0 if ("input" in kinds and "output" in kinds) else 1
@@ -266,17 +332,13 @@ def group_lookalikes(
     return groups
 
 
-def lookalike_payload(
-    settings: Settings,
+def _groups_to_payload(
+    groups_raw: list[list[HashedImage]],
     *,
-    dto_by_name: dict[str, dict[str, Any]] | None = None,
-    hamming: int | None = None,
-    mixed_only: bool = False,
+    threshold: int,
+    hash_stats: dict[str, int],
+    mixed_only: bool,
 ) -> dict[str, Any]:
-    threshold = settings.lookalike_hamming if hamming is None else max(0, min(int(hamming), 32))
-    items, hash_stats = collect_hashed_images(settings, dto_by_name=dto_by_name)
-    groups_raw = group_lookalikes(items, hamming=threshold)
-
     groups_out: list[dict[str, Any]] = []
     mixed_count = 0
     for idx, g in enumerate(groups_raw):
@@ -301,6 +363,7 @@ def lookalike_payload(
                         "mtime": x.mtime,
                         "size": x.size,
                         "phash": f"{x.phash:016x}",
+                        "dhash": f"{x.dhash:016x}",
                     }
                     for x in g
                 ],
@@ -314,8 +377,172 @@ def lookalike_payload(
             **hash_stats,
             "groups": len(groups_out),
             "mixed_groups": mixed_count if not mixed_only else sum(1 for g in groups_out if g["mixed"]),
-            "singleton_skipped": hash_stats["total"] - sum(len(g) for g in groups_raw),
+            "singleton_skipped": hash_stats.get("total", 0) - sum(len(g) for g in groups_raw),
         },
+    }
+
+
+def lookalike_payload(
+    settings: Settings,
+    *,
+    dto_by_name: dict[str, dict[str, Any]] | None = None,
+    hamming: int | None = None,
+    mixed_only: bool = False,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Synchronous full scan + group (CPU-heavy). Prefer the background job APIs."""
+    threshold = settings.lookalike_hamming if hamming is None else max(0, min(int(hamming), 32))
+    items, hash_stats = collect_hashed_images(
+        settings, dto_by_name=dto_by_name, progress_cb=progress_cb
+    )
+    groups_raw = group_lookalikes(items, hamming=threshold)
+    return _groups_to_payload(groups_raw, threshold=threshold, hash_stats=hash_stats, mixed_only=mixed_only)
+
+
+def _set_progress(done: int, total: int, phase: str) -> None:
+    global _progress
+    with _job_lock:
+        _progress = {"done": int(done), "total": int(total), "phase": phase}
+
+
+def _run_lookalike_scan(
+    settings: Settings,
+    *,
+    hamming: int,
+    mixed_only: bool,
+    dto_by_name: dict[str, dict[str, Any]] | None,
+) -> None:
+    global _scanning, _progress, _last_payload, _last_items, _last_error, _last_finished_at, _last_hash_stats
+    try:
+        _set_progress(0, 0, "hashing")
+
+        def on_hash_progress(done: int, total: int) -> None:
+            _set_progress(done, total, "hashing")
+
+        items, hash_stats = collect_hashed_images(
+            settings, dto_by_name=dto_by_name, progress_cb=on_hash_progress
+        )
+        _set_progress(hash_stats.get("total", 0), hash_stats.get("total", 0), "grouping")
+        groups_raw = group_lookalikes(items, hamming=hamming)
+        payload = _groups_to_payload(
+            groups_raw, threshold=hamming, hash_stats=hash_stats, mixed_only=mixed_only
+        )
+        with _job_lock:
+            _last_items = items
+            _last_hash_stats = hash_stats
+            _last_payload = payload
+            _last_error = None
+            _last_finished_at = time.time()
+    except Exception as exc:
+        logger.exception("Lookalike scan failed")
+        with _job_lock:
+            _last_error = str(exc) or exc.__class__.__name__
+            _last_finished_at = time.time()
+    finally:
+        with _job_lock:
+            _scanning = False
+            done = _progress.get("done") or 0
+            total = _progress.get("total") or 0
+            _progress = {"done": done, "total": total, "phase": "done"}
+
+
+def start_lookalike_scan(
+    settings: Settings,
+    *,
+    hamming: int | None = None,
+    mixed_only: bool = False,
+    dto_by_name: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Start a background scan if one is not already running. Returns job status."""
+    global _scanning, _progress, _last_error
+    threshold = settings.lookalike_hamming if hamming is None else max(0, min(int(hamming), 32))
+    with _job_lock:
+        if _scanning:
+            return {
+                "ok": True,
+                "started": False,
+                "already_running": True,
+                "scanning": True,
+                "progress": dict(_progress),
+                "hamming": threshold,
+            }
+        _scanning = True
+        _progress = {"done": 0, "total": 0, "phase": "starting"}
+        _last_error = None
+
+    thread = threading.Thread(
+        target=_run_lookalike_scan,
+        kwargs={
+            "settings": settings,
+            "hamming": threshold,
+            "mixed_only": mixed_only,
+            "dto_by_name": dto_by_name,
+        },
+        name="lookalike-scan",
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "ok": True,
+        "started": True,
+        "already_running": False,
+        "scanning": True,
+        "progress": {"done": 0, "total": 0, "phase": "starting"},
+        "hamming": threshold,
+    }
+
+
+def get_lookalike_snapshot(
+    settings: Settings,
+    *,
+    hamming: int | None = None,
+    mixed_only: bool = False,
+) -> dict[str, Any]:
+    """Non-blocking: last completed groups + scanning/progress. Regroups from memory if hamming changes."""
+    threshold = settings.lookalike_hamming if hamming is None else max(0, min(int(hamming), 32))
+
+    with _job_lock:
+        scanning = _scanning
+        progress = dict(_progress)
+        error = _last_error
+        finished_at = _last_finished_at
+        items = _last_items
+        hash_stats = dict(_last_hash_stats) if _last_hash_stats else {"total": 0, "cache_hits": 0, "computed": 0, "errors": 0}
+        cached_payload = _last_payload
+
+    if items is not None:
+        # Fast regroup for Hamming / mixed_only changes without rehashing
+        groups_raw = group_lookalikes(items, hamming=threshold)
+        payload = _groups_to_payload(
+            groups_raw, threshold=threshold, hash_stats=hash_stats, mixed_only=mixed_only
+        )
+    elif cached_payload is not None and cached_payload.get("hamming") == threshold:
+        payload = {
+            "hamming": threshold,
+            "groups": list(cached_payload.get("groups") or []),
+            "stats": dict(cached_payload.get("stats") or {}),
+        }
+        if mixed_only:
+            payload["groups"] = [g for g in payload["groups"] if g.get("mixed")]
+            payload["stats"] = {
+                **payload["stats"],
+                "groups": len(payload["groups"]),
+                "mixed_groups": len(payload["groups"]),
+            }
+    else:
+        payload = {
+            "hamming": threshold,
+            "groups": [],
+            "stats": {**hash_stats, "groups": 0, "mixed_groups": 0, "singleton_skipped": 0},
+        }
+
+    return {
+        **payload,
+        "scanning": scanning,
+        "progress": progress,
+        "completed_at": finished_at,
+        "error": error,
+        "has_result": items is not None or cached_payload is not None,
     }
 
 

@@ -11,7 +11,7 @@ Works anywhere you can run Docker: Linux NAS (Unraid, TrueNAS), a homelab box, o
 - Mobile-friendly thumbnail grid with multi-select (**select all on page**), and per-tile **zoom** (full-resolution lightbox)
 - **Input vs Output** badges and All / Outputs / Inputs / **Lookalikes** filter
 - **Delete all inputs** (library-wide) with strong confirm (type `DELETE` or checkbox)
-- **Lookalikes**: perceptual aHash groups (Hamming ≤ `LOOKALIKE_HAMMING`), mixed input+output highlighted; delete inputs in groups / except newest
+- **Lookalikes**: perceptual aHash+dHash groups (Hamming ≤ `LOOKALIKE_HAMMING`, default 14), background scan so `/health` stays responsive; mixed input+output highlighted; delete inputs in groups / except newest
 - Delete via InvokeAI `POST /api/v1/images/delete` (never silent filesystem-only delete)
 - Copy or move selected images into configurable **Keepers** folders (nested folders + searchable picker)
 - Path escape protection (`realpath` under allowed roots)
@@ -45,7 +45,7 @@ Map your Invoke outputs (read-only) and a keepers/archive directory (read-write)
 | `CONFIG_DIR` | `/data/config` | App config / cache root |
 | `THUMBS_DIR` | `$CONFIG_DIR/thumbs` | Thumbnail cache (optional override) |
 | `IMAGE_SUBDIR` | `images` | Prefer this subfolder under outputs when listing |
-| `LOOKALIKE_HAMMING` | `8` | aHash Hamming distance for Lookalikes grouping (0–32) |
+| `LOOKALIKE_HAMMING` | `14` | Min aHash/dHash Hamming distance for Lookalikes grouping (0–32) |
 | `PORT` | `8080` | Listen port inside the container |
 | `APP_TITLE` | `Invoke Library` | Browser / UI title |
 | `KEEP_LABEL` | `Keepers` | UI label for the archive destination |
@@ -149,6 +149,8 @@ uvicorn app.main:app --reload --port 8080
 | GET | `/api/images?page=&limit=&kind=` | List images (newest first; `kind`=`all\|output\|input\|unknown`) |
 | GET | `/api/images/thumb?path=` | Cached JPEG thumb |
 | GET | `/api/images/file?path=` | Full image (path must stay under outputs) |
+| GET | `/api/lookalikes` | Last lookalike groups + `{scanning,progress}` (non-blocking) |
+| POST | `/api/lookalikes/refresh` | Start background perceptual scan |
 | GET/POST | `/api/keepers/folders` | List recursive (served from cache; `?refresh=1` forces rescan) / create keeper subfolders (`/api/friends/folders` alias) |
 | POST | `/api/keepers/folders/invalidate` | Drop memory + disk folder cache (`/api/friends/folders/invalidate` alias) |
 | POST | `/api/actions/copy` | `{paths[], dest_folder}` |
@@ -176,7 +178,18 @@ Copy, move, and delete run **one image at a time** so the UI can show a determin
 
 ## Lookalikes
 
-The **Lookalikes** filter computes a 64-bit average hash (aHash) with Pillow, caches results in `$CONFIG_DIR/phash-cache.json` (keyed by relative path + mtime), and groups near-duplicates within Hamming distance `LOOKALIKE_HAMMING` (default 8). Mixed **input + output** groups are listed first. Per-group actions: Select group, Delete except newest, Delete inputs. Toolbar helper **Delete inputs in lookalike groups** drops only Input twins in mixed groups (keeps Outputs).
+The **Lookalikes** filter computes 64-bit **aHash** and **dHash** with Pillow, caches them in `$CONFIG_DIR/phash-cache.json` (keyed by relative path + mtime), and groups near-duplicates when the **minimum** Hamming distance across those hashes is ≤ `LOOKALIKE_HAMMING` (default **14**; override with `?hamming=` or the UI control).
+
+Scanning runs in a **background thread** so the uvicorn event loop stays free (`/health` and the rest of the UI remain responsive):
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/lookalikes?hamming=&mixed_only=` | Returns last completed groups immediately plus `{scanning, progress, stats, has_result}` — never blocks on hashing |
+| POST | `/api/lookalikes/refresh` | Starts a background rescan if one is not already running |
+
+The UI polls every ~1.5s while `scanning` is true and shows progress (`Hashing 1200/5000…`). Hamming can be changed in the UI (8/12/14/16/20/24) to regroup from the in-memory hash list without rehashing. Invoke ImageDTO maps are **not** refetched on lookalike polls (warm cache only, 5‑minute TTL); classification falls back to path/metadata during the hash pass.
+
+Mixed **input + output** groups are listed first. Per-group actions: Select group, Delete except newest, Delete inputs. Toolbar helper **Delete inputs in lookalike groups** drops only Input twins in mixed groups (keeps Outputs).
 
 ## License
 

@@ -18,7 +18,11 @@
     kindCounts: { all: 0, output: 0, input: 0, unknown: 0 },
     lookalikeGroups: [],
     lookalikeStats: null,
-    lookalikeHamming: 8,
+    lookalikeHamming: 14,
+    lookalikeScanning: false,
+    lookalikeProgress: null,
+    lookalikeHasResult: false,
+    lookalikePollTimer: null,
     bulkRunning: false,
     strongConfirmOk: false,
   };
@@ -115,6 +119,8 @@
             : "Delete inputs in lookalike groups";
       }
     }
+    const lookControls = $("#lookalike-controls");
+    if (lookControls) lookControls.hidden = state.kindFilter !== "lookalikes";
   }
 
   function countLookalikeMixedInputs() {
@@ -196,7 +202,21 @@
   function renderLookalikes() {
     grid.className = "lookalike-wrap";
     if (!state.lookalikeGroups.length) {
-      grid.innerHTML = `<div class="lookalike-empty">No lookalike groups found (Hamming ≤ ${state.lookalikeHamming}). Try Refresh after new uploads.</div>`;
+      if (state.lookalikeScanning) {
+        const pr = state.lookalikeProgress || {};
+        const done = pr.done != null ? pr.done : 0;
+        const total = pr.total != null ? pr.total : 0;
+        const phase = pr.phase || "hashing";
+        const msg =
+          total > 0
+            ? `Still scanning — ${phase} ${done}/${total}…`
+            : "Still scanning library for lookalikes…";
+        grid.innerHTML = `<div class="lookalike-empty scanning">${msg}</div>`;
+      } else if (!state.lookalikeHasResult) {
+        grid.innerHTML = `<div class="lookalike-empty scanning">Starting lookalike scan…</div>`;
+      } else {
+        grid.innerHTML = `<div class="lookalike-empty">No lookalike groups found (Hamming ≤ ${state.lookalikeHamming}). Raise Hamming or click Rescan after new uploads.</div>`;
+      }
       return;
     }
     const frag = document.createDocumentFragment();
@@ -312,6 +332,11 @@
       state.keepLabel = cfg.keep_label || "Keepers";
       state.appTitle = cfg.app_title || "Invoke Library";
       if (cfg.lookalike_hamming != null) state.lookalikeHamming = cfg.lookalike_hamming;
+      const hamm = $("#lookalike-hamming");
+      if (hamm) {
+        const val = String(state.lookalikeHamming);
+        if ([...hamm.options].some((o) => o.value === val)) hamm.value = val;
+      }
       document.title = state.appTitle;
       const titleEl = $("#app-title");
       if (titleEl) titleEl.textContent = state.appTitle;
@@ -328,9 +353,10 @@
     statusLine.textContent = "Loading…";
     try {
       if (state.kindFilter === "lookalikes") {
-        await loadLookalikes();
+        await loadLookalikes({ rescan: false });
         return;
       }
+      stopLookalikePoll();
       const pager = $("#pager");
       if (pager) pager.style.display = "";
       const kindQ =
@@ -358,28 +384,152 @@
     }
   }
 
-  async function loadLookalikes() {
-    const pager = $("#pager");
-    if (pager) pager.style.display = "none";
-    statusLine.textContent = "Computing lookalikes…";
-    const data = await api(`/api/lookalikes?hamming=${encodeURIComponent(state.lookalikeHamming)}`);
+  function stopLookalikePoll() {
+    if (state.lookalikePollTimer) {
+      clearInterval(state.lookalikePollTimer);
+      state.lookalikePollTimer = null;
+    }
+  }
+
+  function formatLookalikeProgress(progress) {
+    const pr = progress || {};
+    const done = pr.done != null ? pr.done : 0;
+    const total = pr.total != null ? pr.total : 0;
+    const phase = pr.phase || "";
+    if (phase === "grouping") return "Grouping lookalikes…";
+    if (phase === "starting") return "Starting scan…";
+    if (total > 0) return `Hashing ${done}/${total}…`;
+    if (phase === "hashing") return "Hashing…";
+    return phase ? `Scan: ${phase}` : "";
+  }
+
+  function applyLookalikePayload(data) {
     state.lookalikeGroups = data.groups || [];
     state.lookalikeStats = data.stats || null;
+    state.lookalikeScanning = !!data.scanning;
+    state.lookalikeProgress = data.progress || null;
+    state.lookalikeHasResult = !!data.has_result || state.lookalikeGroups.length > 0;
     if (data.hamming != null) state.lookalikeHamming = data.hamming;
-    // Refresh kind counts so Delete all inputs stays accurate
-    try {
-      const countsData = await api(`/api/images?page=1&limit=1`);
-      if (countsData.counts) state.kindCounts = countsData.counts;
-    } catch (_) {
-      /* ignore */
+    const sel = $("#lookalike-hamming");
+    if (sel) {
+      const val = String(state.lookalikeHamming);
+      if ([...sel.options].some((o) => o.value === val)) sel.value = val;
     }
-    updateKindChips();
+    const progEl = $("#lookalike-progress");
+    if (progEl) {
+      if (state.lookalikeScanning) {
+        progEl.textContent = formatLookalikeProgress(state.lookalikeProgress);
+      } else if (data.error) {
+        progEl.textContent = `Scan error: ${data.error}`;
+      } else {
+        progEl.textContent = state.lookalikeHasResult ? "Scan complete" : "";
+      }
+    }
+  }
+
+  function updateLookalikePageInfo() {
     const stats = state.lookalikeStats || {};
-    const mixed = stats.mixed_groups != null ? stats.mixed_groups : state.lookalikeGroups.filter((g) => g.mixed).length;
-    pageInfo.textContent = `${state.lookalikeGroups.length} lookalike groups · ${mixed} mixed input/output · Hamming ≤ ${state.lookalikeHamming}`;
-    statusLine.textContent = "";
-    renderGrid();
-    updateToolbar();
+    const mixed =
+      stats.mixed_groups != null
+        ? stats.mixed_groups
+        : state.lookalikeGroups.filter((g) => g.mixed).length;
+    let line = `${state.lookalikeGroups.length} lookalike groups · ${mixed} mixed input/output · Hamming ≤ ${state.lookalikeHamming}`;
+    if (state.lookalikeScanning) {
+      line += ` · ${formatLookalikeProgress(state.lookalikeProgress)}`;
+    }
+    pageInfo.textContent = line;
+  }
+
+  function startLookalikePoll() {
+    stopLookalikePoll();
+    state.lookalikePollTimer = setInterval(async () => {
+      if (state.kindFilter !== "lookalikes") {
+        stopLookalikePoll();
+        return;
+      }
+      try {
+        const data = await api(
+          `/api/lookalikes?hamming=${encodeURIComponent(state.lookalikeHamming)}`
+        );
+        applyLookalikePayload(data);
+        updateLookalikePageInfo();
+        updateKindChips();
+        renderGrid();
+        updateToolbar();
+        if (!data.scanning) {
+          stopLookalikePoll();
+          statusLine.textContent = "";
+          try {
+            const countsData = await api(`/api/images?page=1&limit=1`);
+            if (countsData.counts) state.kindCounts = countsData.counts;
+            updateKindChips();
+          } catch (_) {
+            /* ignore */
+          }
+        } else {
+          statusLine.textContent = formatLookalikeProgress(data.progress);
+        }
+      } catch (err) {
+        statusLine.textContent = err.message || "Lookalike poll failed";
+      }
+    }, 1500);
+  }
+
+  async function requestLookalikeRefresh() {
+    await api("/api/lookalikes/refresh", {
+      method: "POST",
+      body: JSON.stringify({
+        hamming: state.lookalikeHamming,
+        mixed_only: false,
+      }),
+    });
+  }
+
+  async function loadLookalikes({ rescan = false } = {}) {
+    const pager = $("#pager");
+    if (pager) pager.style.display = "none";
+    updateFilterActionButtons();
+    statusLine.textContent = rescan ? "Starting lookalike scan…" : "Loading lookalikes…";
+    try {
+      let data = await api(
+        `/api/lookalikes?hamming=${encodeURIComponent(state.lookalikeHamming)}`
+      );
+      applyLookalikePayload(data);
+      updateLookalikePageInfo();
+      renderGrid();
+      updateToolbar();
+      updateKindChips();
+
+      if (rescan || !data.has_result) {
+        if (!data.scanning) {
+          await requestLookalikeRefresh();
+          data = await api(
+            `/api/lookalikes?hamming=${encodeURIComponent(state.lookalikeHamming)}`
+          );
+          applyLookalikePayload(data);
+          updateLookalikePageInfo();
+          renderGrid();
+        }
+      }
+
+      if (data.scanning || state.lookalikeScanning) {
+        statusLine.textContent = formatLookalikeProgress(data.progress || state.lookalikeProgress);
+        startLookalikePoll();
+      } else {
+        stopLookalikePoll();
+        statusLine.textContent = "";
+        try {
+          const countsData = await api(`/api/images?page=1&limit=1`);
+          if (countsData.counts) state.kindCounts = countsData.counts;
+          updateKindChips();
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    } catch (err) {
+      statusLine.textContent = err.message;
+      toast(err.message, "error");
+    }
   }
 
   function openLightbox(path) {
@@ -1047,7 +1197,24 @@
         loadImages();
       }
     });
-    $("#btn-refresh").addEventListener("click", loadImages);
+    $("#btn-refresh").addEventListener("click", () => {
+      if (state.kindFilter === "lookalikes") loadLookalikes({ rescan: true });
+      else loadImages();
+    });
+    const hammSel = $("#lookalike-hamming");
+    if (hammSel) {
+      hammSel.addEventListener("change", () => {
+        const v = parseInt(hammSel.value, 10);
+        if (!Number.isNaN(v)) {
+          state.lookalikeHamming = v;
+          if (state.kindFilter === "lookalikes") loadLookalikes({ rescan: false });
+        }
+      });
+    }
+    const btnRescan = $("#btn-lookalike-rescan");
+    if (btnRescan) {
+      btnRescan.addEventListener("click", () => loadLookalikes({ rescan: true }));
+    }
     $("#btn-cancel").addEventListener("click", closeModal);
     $("#btn-confirm").addEventListener("click", confirmAction);
     $("#btn-create-folder").addEventListener("click", createFolder);

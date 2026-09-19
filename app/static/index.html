@@ -35,6 +35,20 @@
       <button type="button" class="danger" id="btn-delete-all-inputs" title="Delete every image classified as Input via InvokeAI">Delete all inputs</button>
       <button type="button" class="danger" id="btn-delete-lookalike-inputs" hidden title="In mixed lookalike groups, delete Input twins and keep Outputs">Delete inputs in lookalike groups</button>
     </div>
+    <div class="lookalike-controls" id="lookalike-controls" hidden>
+      <label class="lookalike-hamming-label" for="lookalike-hamming">Hamming
+        <select id="lookalike-hamming" title="Max perceptual distance (aHash/dHash)">
+          <option value="8">8</option>
+          <option value="12">12</option>
+          <option value="14" selected>14</option>
+          <option value="16">16</option>
+          <option value="20">20</option>
+          <option value="24">24</option>
+        </select>
+      </label>
+      <button type="button" id="btn-lookalike-rescan" title="Re-hash library in the background">Rescan</button>
+      <span class="lookalike-progress meta" id="lookalike-progress" aria-live="polite"></span>
+    </div>
     <div class="page-select-row" id="page-select-row">
       <label class="page-select-label" for="chk-select-all-page">
         <input type="checkbox" id="chk-select-all-page" />

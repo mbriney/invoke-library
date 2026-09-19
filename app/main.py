@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -15,8 +16,8 @@ import secrets
 from app.config import Settings, get_settings
 from app.folders_cache import bump_after_mutate, get_folders, invalidate as invalidate_folders_cache
 from app.images import get_or_make_thumb, list_images, resolve_output_image
-from app.lookalikes import list_input_refs, lookalike_payload
-from app.invoke_client import InvokeAPIError, InvokeClient
+from app.lookalikes import get_lookalike_snapshot, list_input_refs, start_lookalike_scan
+from app.invoke_client import InvokeAPIError, InvokeClient, peek_cached_dto_map
 from app.paths import PathEscapeError, ensure_dir, folder_name_ok, folder_relpath_ok, resolve_under, safe_relpath
 
 logging.basicConfig(level=logging.INFO)
@@ -126,7 +127,9 @@ async def api_images(
         dto_map = await client.build_image_dto_map()
     except Exception:
         logger.debug("Invoke DTO map unavailable; using filesystem/metadata classification", exc_info=True)
-    return list_images(settings, page=page, limit=limit, kind=kind, dto_by_name=dto_map or None)
+    return await asyncio.to_thread(
+        list_images, settings, page=page, limit=limit, kind=kind, dto_by_name=dto_map or None
+    )
 
 
 @app.get("/api/images/inputs")
@@ -138,7 +141,12 @@ async def api_list_inputs(_: AuthDep, settings: SettingsDep) -> dict:
         dto_map = await client.build_image_dto_map()
     except Exception:
         logger.debug("Invoke DTO map unavailable for inputs list", exc_info=True)
-    return list_input_refs(settings, dto_by_name=dto_map or None)
+    return await asyncio.to_thread(list_input_refs, settings, dto_by_name=dto_map or None)
+
+
+class LookalikeRefreshBody(BaseModel):
+    hamming: int | None = Field(default=None, ge=0, le=32)
+    mixed_only: bool = False
 
 
 @app.get("/api/lookalikes")
@@ -158,18 +166,31 @@ async def api_lookalikes(
         description="1 = only groups that mix input + output",
     ),
 ) -> dict:
-    """Perceptual near-duplicate groups (aHash) with kind labels."""
-    dto_map: dict = {}
-    client = InvokeClient(settings)
-    try:
-        dto_map = await client.build_image_dto_map()
-    except Exception:
-        logger.debug("Invoke DTO map unavailable for lookalikes", exc_info=True)
-    return lookalike_payload(
+    """Last lookalike groups + scan status. Never blocks on hashing."""
+    # Regroup from in-memory hashes can still be CPU-heavy for huge libs — off event loop.
+    return await asyncio.to_thread(
+        get_lookalike_snapshot,
         settings,
-        dto_by_name=dto_map or None,
         hamming=hamming,
         mixed_only=bool(mixed_only),
+    )
+
+
+@app.post("/api/lookalikes/refresh")
+async def api_lookalikes_refresh(
+    _: AuthDep,
+    settings: SettingsDep,
+    body: LookalikeRefreshBody | None = None,
+) -> dict:
+    """Start a background aHash/dHash scan if one is not already running."""
+    body = body or LookalikeRefreshBody()
+    # Prefer warm DTO cache only — never refetch Invoke map on every lookalike poll/refresh.
+    dto_map = peek_cached_dto_map()
+    return start_lookalike_scan(
+        settings,
+        hamming=body.hamming,
+        mixed_only=bool(body.mixed_only),
+        dto_by_name=dto_map or None,
     )
 
 

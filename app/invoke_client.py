@@ -12,7 +12,12 @@ logger = logging.getLogger(__name__)
 # Best-effort ImageDTO map cache (shared across requests)
 _DTO_MAP_CACHE: dict[str, dict] | None = None
 _DTO_MAP_CACHE_AT: float = 0.0
-_DTO_MAP_TTL_SEC = 60.0
+_DTO_MAP_TTL_SEC = 300.0
+
+
+def peek_cached_dto_map() -> dict[str, dict] | None:
+    """Return in-memory ImageDTO map if present (may be stale). Never fetches."""
+    return _DTO_MAP_CACHE
 
 
 class InvokeAPIError(Exception):

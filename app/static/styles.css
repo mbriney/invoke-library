@@ -561,3 +561,35 @@ main { padding: 1rem; max-width: 1400px; margin: 0 auto; }
   padding: 2rem 1rem;
   text-align: center;
 }
+
+.lookalike-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.lookalike-hamming-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.lookalike-hamming-label select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.4rem;
+}
+.lookalike-progress {
+  font-size: 0.85rem;
+}
+.lookalike-empty.scanning {
+  color: var(--text);
+}

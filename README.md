@@ -8,9 +8,10 @@ Works anywhere you can run Docker: Linux NAS (Unraid, TrueNAS), a homelab box, o
 
 ## Features
 
-- Mobile-friendly thumbnail grid with multi-select
+- Mobile-friendly thumbnail grid with multi-select and per-tile **zoom** (full-resolution lightbox)
+- **Input vs Output** badges and All / Outputs / Inputs filter
 - Delete via InvokeAI `POST /api/v1/images/delete` (never silent filesystem-only delete)
-- Copy or move selected images into configurable **Keepers** folders
+- Copy or move selected images into configurable **Keepers** folders (nested folders + searchable picker)
 - Path escape protection (`realpath` under allowed roots)
 - Optional HTTP Basic Auth for the curator UI
 - Cached JPEG thumbnails (Pillow)
@@ -76,6 +77,24 @@ Content-Type: application/json
 
 `image_name` is derived from the file basename under outputs. If the Invoke call fails, the UI shows a clear error and **does not** fall back to raw filesystem delete for the Delete action. Move = copy to keepers, then the same Invoke delete.
 
+## Input vs Output classification
+
+Each thumbnail is labeled **Output**, **Input**, or **Unknown**:
+
+1. **Invoke API** (preferred): when `INVOKE_BASE_URL` is reachable, the app maps `image_name` → ImageDTO and uses `image_origin` / `image_category` (`internal`+`general` → Output; `external` or `user`/`control`/`mask` → Input).
+2. **Filesystem path**: category folders from Invoke’s `image_subfolder_strategy=type` (e.g. `images/general/…`, `images/user/…`).
+3. **PNG metadata**: generation chunks such as `invokeai_metadata` → Output.
+
+Filter chips **All | Outputs | Inputs** apply server-side (`GET /api/images?kind=`). Set `INVOKE_API_TOKEN` in multi-user mode so API classification works.
+
+## Unraid Docker icon
+
+Template Icon URL (also used as `net.unraid.docker.icon`):
+
+`https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png`
+
+In **Add Container**, paste that into the **Icon** field (or re-apply the template from `unraid/my-invoke-library.xml`). Asset source: [`unraid/icon.png`](unraid/icon.png).
+
 ## Unraid example
 
 Container name: `invoke-library` · host port `8091` → container `8080`.
@@ -122,10 +141,10 @@ uvicorn app.main:app --reload --port 8080
 | Method | Path | Notes |
 |--------|------|-------|
 | GET | `/health` | Liveness + Invoke ping |
-| GET | `/api/images?page=&limit=` | List images (newest first) |
+| GET | `/api/images?page=&limit=&kind=` | List images (newest first; `kind`=`all\|output\|input\|unknown`) |
 | GET | `/api/images/thumb?path=` | Cached JPEG thumb |
 | GET | `/api/images/file?path=` | Full image (path must stay under outputs) |
-| GET/POST | `/api/keepers/folders` | List / create keeper subfolders (`/api/friends/folders` alias) |
+| GET/POST | `/api/keepers/folders` | List recursive / create keeper subfolders (`/api/friends/folders` alias) |
 | POST | `/api/actions/copy` | `{paths[], dest_folder}` |
 | POST | `/api/actions/move` | Copy then Invoke delete |
 | POST | `/api/actions/delete` | Invoke delete only |

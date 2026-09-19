@@ -25,6 +25,11 @@
 
   <main>
     <div id="status-line" class="status-line"></div>
+    <div class="kind-filter" id="kind-filter" role="group" aria-label="Filter by type">
+      <button type="button" class="kind-chip active" data-kind="all">All</button>
+      <button type="button" class="kind-chip" data-kind="output">Outputs</button>
+      <button type="button" class="kind-chip" data-kind="input">Inputs</button>
+    </div>
     <div id="grid" class="grid"></div>
     <div class="pager">
       <button type="button" id="btn-prev" disabled>Prev</button>
@@ -39,8 +44,11 @@
       <div id="confirm-only" style="display:none"></div>
       <div id="keep-controls" style="display:none">
         <h2 id="modal-keep-title" class="meta" style="font-size:0.95rem;font-weight:600;margin-bottom:0.5rem">Send to {{KEEP_LABEL}}</h2>
-        <label for="folder-select">Destination folder</label>
-        <select id="folder-select"></select>
+        <label for="folder-filter">Filter folders</label>
+        <input type="search" id="folder-filter" placeholder="Type to filter…" autocomplete="off" />
+        <label id="folder-list-label">Destination folder</label>
+        <div id="folder-list" class="folder-list" role="listbox" aria-labelledby="folder-list-label"></div>
+        <div id="folder-selected" class="folder-selected meta">No folder selected</div>
         <label for="new-folder">Or create folder</label>
         <div class="new-folder-row">
           <input type="text" id="new-folder" placeholder="New folder name" maxlength="200" />
@@ -54,7 +62,8 @@
     </div>
   </div>
 
-  <div class="lightbox" id="lightbox">
+  <div class="lightbox" id="lightbox" aria-hidden="true" role="dialog" aria-label="Full size image">
+    <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Close">×</button>
     <img id="lightbox-img" alt="Full image" />
   </div>
 

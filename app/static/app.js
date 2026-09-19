@@ -9,6 +9,11 @@
     keepLabel: "Keepers",
     appTitle: "Invoke Library",
     action: null, // 'copy' | 'move' | 'delete'
+    folders: [],
+    folderFilter: "",
+    selectedFolder: "",
+    kindFilter: "all", // all | output | input
+    kindCounts: { all: 0, output: 0, input: 0, unknown: 0 },
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -74,16 +79,32 @@
       const card = document.createElement("div");
       card.className = "card" + (state.selected.has(item.path) ? " selected" : "");
       card.dataset.path = item.path;
+      const kind = item.kind || "unknown";
+      const kindLabel = kind === "output" ? "Output" : kind === "input" ? "Input" : "Unknown";
       card.innerHTML = `
         <div class="check">${state.selected.has(item.path) ? "✓" : ""}</div>
+        <span class="kind-badge ${kind}">${kindLabel}</span>
         <img loading="lazy" alt="" src="/api/images/thumb?path=${encodeURIComponent(item.path)}" />
+        <button type="button" class="zoom-btn" aria-label="View full size" title="View full size">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            <path fill="currentColor" d="M12 10h-2v2H9v-2H7V9h2V7h1v2h2v1z"/>
+          </svg>
+        </button>
       `;
       card.addEventListener("click", (e) => {
+        if (e.target.closest(".zoom-btn")) return;
         if (e.detail === 2) {
           openLightbox(item.path);
           return;
         }
         toggleSelect(item.path);
+      });
+      const zoomBtn = card.querySelector(".zoom-btn");
+      zoomBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openLightbox(item.path);
       });
       frag.appendChild(card);
     }
@@ -129,17 +150,20 @@
   async function loadImages() {
     statusLine.textContent = "Loading…";
     try {
-      const data = await api(`/api/images?page=${state.page}&limit=${state.limit}`);
+      const kindQ = state.kindFilter && state.kindFilter !== "all" ? `&kind=${encodeURIComponent(state.kindFilter)}` : "";
+      const data = await api(`/api/images?page=${state.page}&limit=${state.limit}${kindQ}`);
       state.items = data.items || [];
       state.total = data.total || 0;
       state.pages = data.pages || 0;
+      if (data.counts) state.kindCounts = data.counts;
+      updateKindChips();
+      const filterNote = state.kindFilter !== "all" ? ` · ${state.kindFilter}s` : "";
       pageInfo.textContent = state.pages
-        ? `Page ${state.page} / ${state.pages} · ${state.total} images`
-        : `${state.total} images`;
+        ? `Page ${state.page} / ${state.pages} · ${state.total} images${filterNote}`
+        : `${state.total} images${filterNote}`;
       $("#btn-prev").disabled = state.page <= 1;
       $("#btn-next").disabled = !state.pages || state.page >= state.pages;
       statusLine.textContent = "";
-      // Drop selections that left the visible set? Keep across pages.
       renderGrid();
       updateToolbar();
     } catch (err) {
@@ -152,11 +176,15 @@
     const box = $("#lightbox");
     const img = $("#lightbox-img");
     img.src = `/api/images/file?path=${encodeURIComponent(path)}`;
+    img.alt = path.split("/").pop() || "Full image";
     box.classList.add("open");
+    box.setAttribute("aria-hidden", "false");
   }
 
   function closeLightbox() {
-    $("#lightbox").classList.remove("open");
+    const box = $("#lightbox");
+    box.classList.remove("open");
+    box.setAttribute("aria-hidden", "true");
     $("#lightbox-img").src = "";
   }
 
@@ -186,6 +214,9 @@
       keepControls.style.display = "block";
       $("#btn-confirm").className = "primary";
       $("#btn-confirm").textContent = action === "move" ? "Move" : "Copy";
+      state.folderFilter = "";
+      const filterEl = $("#folder-filter");
+      if (filterEl) filterEl.value = "";
       loadFolders();
     }
     backdrop.classList.add("open");
@@ -196,19 +227,72 @@
     state.action = null;
   }
 
+  function filteredFolders() {
+    const q = (state.folderFilter || "").trim().toLowerCase();
+    if (!q) return state.folders.slice();
+    return state.folders.filter((f) => f.toLowerCase().includes(q));
+  }
+
+  function updateSelectedFolderLabel() {
+    const el = $("#folder-selected");
+    if (!el) return;
+    if (state.selectedFolder) {
+      el.innerHTML = `Selected: <strong>${escapeHtml(state.selectedFolder)}</strong>`;
+    } else {
+      el.textContent = "No folder selected";
+    }
+  }
+
+  function selectFolder(path) {
+    state.selectedFolder = path || "";
+    renderFolderList();
+    updateSelectedFolderLabel();
+  }
+
+  function renderFolderList() {
+    const list = $("#folder-list");
+    if (!list) return;
+    const folders = filteredFolders();
+    list.innerHTML = "";
+    if (!state.folders.length) {
+      list.innerHTML = `<div class="folder-list-empty">No folders yet — create one below</div>`;
+      return;
+    }
+    if (!folders.length) {
+      list.innerHTML = `<div class="folder-list-empty">No folders match “${escapeHtml(state.folderFilter.trim())}”</div>`;
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const f of folders) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "folder-item" + (f === state.selectedFolder ? " selected" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", f === state.selectedFolder ? "true" : "false");
+      btn.title = f;
+      btn.textContent = f;
+      btn.addEventListener("click", () => selectFolder(f));
+      frag.appendChild(btn);
+    }
+    list.appendChild(frag);
+  }
+
   async function loadFolders() {
-    const sel = $("#folder-select");
-    sel.innerHTML = `<option value="">Loading…</option>`;
+    const list = $("#folder-list");
+    if (list) list.innerHTML = `<div class="folder-list-empty">Loading…</div>`;
     try {
       const data = await api("/api/keepers/folders");
-      const folders = data.folders || [];
-      if (!folders.length) {
-        sel.innerHTML = `<option value="">(no folders yet — create one)</option>`;
-      } else {
-        sel.innerHTML = folders.map((f) => `<option value="${escapeAttr(f)}">${escapeHtml(f)}</option>`).join("");
+      state.folders = data.folders || [];
+      if (state.selectedFolder && !state.folders.includes(state.selectedFolder)) {
+        state.selectedFolder = "";
       }
+      if (!state.selectedFolder && state.folders.length === 1) {
+        state.selectedFolder = state.folders[0];
+      }
+      renderFolderList();
+      updateSelectedFolderLabel();
     } catch (err) {
-      sel.innerHTML = `<option value="">Failed to load</option>`;
+      if (list) list.innerHTML = `<div class="folder-list-empty">Failed to load folders</div>`;
       toast(err.message, "error");
     }
   }
@@ -220,9 +304,6 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
-  function escapeAttr(s) {
-    return escapeHtml(s).replace(/'/g, "&#39;");
-  }
 
   async function createFolder() {
     const input = $("#new-folder");
@@ -232,7 +313,7 @@
       await api("/api/keepers/folders", { method: "POST", body: JSON.stringify({ name }) });
       input.value = "";
       await loadFolders();
-      $("#folder-select").value = name;
+      selectFolder(name);
       toast(`Created folder “${name}”`, "ok");
     } catch (err) {
       toast(err.message, "error");
@@ -250,9 +331,9 @@
           method: "POST",
           body: JSON.stringify({ paths }),
         });
-        toast(`Deleted ${ (res.deleted_images || []).length } via InvokeAI`, "ok");
+        toast(`Deleted ${(res.deleted_images || []).length} via InvokeAI`, "ok");
       } else {
-        const dest = $("#folder-select").value;
+        const dest = state.selectedFolder;
         if (!dest) {
           toast("Choose or create a destination folder", "error");
           return;
@@ -284,7 +365,36 @@
     }
   }
 
+
+  function updateKindChips() {
+    const root = $("#kind-filter");
+    if (!root) return;
+    const c = state.kindCounts || {};
+    for (const btn of root.querySelectorAll(".kind-chip")) {
+      const k = btn.dataset.kind;
+      btn.classList.toggle("active", k === state.kindFilter);
+      let label = k === "all" ? "All" : k === "output" ? "Outputs" : "Inputs";
+      if (k === "all" && c.all != null) label = `All (${c.all})`;
+      else if (k === "output" && c.output != null) label = `Outputs (${c.output})`;
+      else if (k === "input" && c.input != null) label = `Inputs (${c.input})`;
+      btn.textContent = label;
+    }
+  }
+
   function wire() {
+    const kindRoot = $("#kind-filter");
+    if (kindRoot) {
+      kindRoot.addEventListener("click", (e) => {
+        const btn = e.target.closest(".kind-chip");
+        if (!btn) return;
+        const k = btn.dataset.kind;
+        if (!k || k === state.kindFilter) return;
+        state.kindFilter = k;
+        state.page = 1;
+        updateKindChips();
+        loadImages();
+      });
+    }
     $("#btn-select-all").addEventListener("click", selectAllOnPage);
     $("#btn-clear").addEventListener("click", clearSelection);
     $("#btn-delete").addEventListener("click", () => openModal("delete"));
@@ -306,10 +416,25 @@
     $("#btn-cancel").addEventListener("click", closeModal);
     $("#btn-confirm").addEventListener("click", confirmAction);
     $("#btn-create-folder").addEventListener("click", createFolder);
+    $("#folder-filter").addEventListener("input", (e) => {
+      state.folderFilter = e.target.value || "";
+      renderFolderList();
+    });
     $("#modal").addEventListener("click", (e) => {
       if (e.target.id === "modal") closeModal();
     });
-    $("#lightbox").addEventListener("click", closeLightbox);
+    $("#lightbox").addEventListener("click", (e) => {
+      if (e.target.id === "lightbox" || e.target.id === "lightbox-close") {
+        closeLightbox();
+      }
+    });
+    $("#lightbox-close").addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeLightbox();
+    });
+    $("#lightbox-img").addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         closeModal();

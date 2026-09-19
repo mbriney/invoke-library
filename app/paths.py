@@ -57,3 +57,20 @@ def folder_name_ok(name: str) -> bool:
     if os.sep in name or (os.altsep and os.altsep in name):
         return False
     return True
+
+def folder_relpath_ok(rel: str, *, max_depth: int = 4) -> bool:
+    """Validate a relative folder path under KEEP_DIR (allows nested segments)."""
+    if not rel or rel.strip() != rel:
+        return False
+    if "\0" in rel or rel.startswith("/") or rel.startswith("\\"):
+        return False
+    # Normalize separators to /
+    parts = rel.replace("\\", "/").split("/")
+    if not parts or any(p == "" for p in parts):
+        return False
+    if len(parts) > max_depth:
+        return False
+    for p in parts:
+        if p in (".", "..") or not folder_name_ok(p):
+            return False
+    return True

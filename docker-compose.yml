@@ -29,3 +29,6 @@ services:
       # Optional thumb/config cache
       - ${CONFIG_HOST:-./data/config}:/data/config
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8080]/"

@@ -48,9 +48,12 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${NAME}"; then
   docker rm "${NAME}" || true
 fi
 
+ICON_URL="https://raw.githubusercontent.com/mbriney/invoke-library/main/unraid/icon.png"
 docker run -d \
   --name "${NAME}" \
   --restart unless-stopped \
+  --label net.unraid.docker.icon="${ICON_URL}" \
+  --label "net.unraid.docker.webui=http://[IP]:[PORT:8080]/" \
   -p "${HOST_PORT}:8080" \
   -e INVOKE_BASE_URL="${INVOKE_BASE_URL:-http://192.168.1.12:9091}" \
   -e INVOKE_API_TOKEN="${INVOKE_API_TOKEN:-}" \

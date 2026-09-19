@@ -15,7 +15,7 @@ import secrets
 from app.config import Settings, get_settings
 from app.images import get_or_make_thumb, list_images, resolve_output_image
 from app.invoke_client import InvokeAPIError, InvokeClient
-from app.paths import PathEscapeError, ensure_dir, folder_name_ok, resolve_under, safe_relpath
+from app.paths import PathEscapeError, ensure_dir, folder_name_ok, folder_relpath_ok, resolve_under, safe_relpath
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("invoke_library")
@@ -112,8 +112,18 @@ async def api_images(
     settings: SettingsDep,
     page: int = Query(1, ge=1),
     limit: int = Query(48, ge=1, le=200),
+    kind: str | None = Query(
+        None,
+        description="Filter by classification: all|output|input|unknown",
+    ),
 ) -> dict:
-    return list_images(settings, page=page, limit=limit)
+    dto_map: dict = {}
+    client = InvokeClient(settings)
+    try:
+        dto_map = await client.build_image_dto_map()
+    except Exception:
+        logger.debug("Invoke DTO map unavailable; using filesystem/metadata classification", exc_info=True)
+    return list_images(settings, page=page, limit=limit, kind=kind, dto_by_name=dto_map or None)
 
 
 @app.get("/api/images/thumb")
@@ -157,16 +167,50 @@ async def api_file(
     return FileResponse(src, media_type=media)
 
 
+KEEP_FOLDER_MAX_DEPTH = 4
+
+
+def _list_keeper_subdirs(root: Path, *, max_depth: int = KEEP_FOLDER_MAX_DEPTH) -> list[str]:
+    """Return relative posix paths of all subdirs under *root*, up to *max_depth*."""
+    root_real = root.resolve()
+    found: list[str] = []
+
+    def walk(current: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            return
+        for p in entries:
+            if not p.is_dir() or p.name.startswith("."):
+                continue
+            try:
+                rel = safe_relpath(p, root_real)
+            except ValueError:
+                continue
+            # depth of relative path = number of segments
+            parts = Path(rel).parts
+            if len(parts) > max_depth:
+                continue
+            found.append(rel)
+            walk(p, depth + 1)
+
+    walk(root_real, 1)
+    return sorted(found, key=str.lower)
+
+
 @app.get("/api/keepers/folders")
 @app.get("/api/friends/folders")  # back-compat alias
 async def list_keeper_folders(_: AuthDep, settings: SettingsDep) -> dict:
     root = settings.archive_dir
     ensure_dir(root)
-    folders = sorted(
-        [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")],
-        key=str.lower,
-    )
-    return {"folders": folders, "keep_label": settings.keep_label}
+    folders = _list_keeper_subdirs(root, max_depth=KEEP_FOLDER_MAX_DEPTH)
+    return {
+        "folders": folders,
+        "keep_label": settings.keep_label,
+        "max_depth": KEEP_FOLDER_MAX_DEPTH,
+    }
 
 
 @app.post("/api/keepers/folders")
@@ -206,7 +250,7 @@ def _resolve_sources(settings: Settings, paths: list[str]) -> list[tuple[str, Pa
 
 
 def _copy_to_keeper(settings: Settings, sources: list[tuple[str, Path]], dest_folder: str) -> list[dict]:
-    if not folder_name_ok(dest_folder):
+    if not folder_relpath_ok(dest_folder, max_depth=KEEP_FOLDER_MAX_DEPTH):
         raise HTTPException(400, "Invalid destination folder")
     try:
         dest_dir = resolve_under(settings.archive_dir, dest_folder)

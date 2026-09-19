@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import secrets
 
 from app.config import Settings, get_settings
+from app.folders_cache import bump_after_mutate, get_folders, invalidate as invalidate_folders_cache
 from app.images import get_or_make_thumb, list_images, resolve_output_image
 from app.invoke_client import InvokeAPIError, InvokeClient
 from app.paths import PathEscapeError, ensure_dir, folder_name_ok, folder_relpath_ok, resolve_under, safe_relpath
@@ -170,47 +171,37 @@ async def api_file(
 KEEP_FOLDER_MAX_DEPTH = 4
 
 
-def _list_keeper_subdirs(root: Path, *, max_depth: int = KEEP_FOLDER_MAX_DEPTH) -> list[str]:
-    """Return relative posix paths of all subdirs under *root*, up to *max_depth*."""
-    root_real = root.resolve()
-    found: list[str] = []
-
-    def walk(current: Path, depth: int) -> None:
-        if depth > max_depth:
-            return
-        try:
-            entries = sorted(current.iterdir(), key=lambda p: p.name.lower())
-        except OSError:
-            return
-        for p in entries:
-            if not p.is_dir() or p.name.startswith("."):
-                continue
-            try:
-                rel = safe_relpath(p, root_real)
-            except ValueError:
-                continue
-            # depth of relative path = number of segments
-            parts = Path(rel).parts
-            if len(parts) > max_depth:
-                continue
-            found.append(rel)
-            walk(p, depth + 1)
-
-    walk(root_real, 1)
-    return sorted(found, key=str.lower)
-
-
 @app.get("/api/keepers/folders")
 @app.get("/api/friends/folders")  # back-compat alias
-async def list_keeper_folders(_: AuthDep, settings: SettingsDep) -> dict:
+async def list_keeper_folders(
+    _: AuthDep,
+    settings: SettingsDep,
+    refresh: int = Query(0, ge=0, le=1, description="Force reload folder tree (1=yes)"),
+) -> dict:
     root = settings.archive_dir
     ensure_dir(root)
-    folders = _list_keeper_subdirs(root, max_depth=KEEP_FOLDER_MAX_DEPTH)
+    folders, meta = get_folders(
+        root=root,
+        config_dir=settings.config_dir,
+        max_depth=KEEP_FOLDER_MAX_DEPTH,
+        force=bool(refresh),
+    )
     return {
         "folders": folders,
         "keep_label": settings.keep_label,
         "max_depth": KEEP_FOLDER_MAX_DEPTH,
+        "cache": meta.get("cache"),
+        "listed_at": meta.get("listed_at"),
+        "ttl_sec": meta.get("ttl_sec"),
     }
+
+
+@app.post("/api/keepers/folders/invalidate")
+@app.post("/api/friends/folders/invalidate")
+async def invalidate_keeper_folders(_: AuthDep, settings: SettingsDep) -> dict:
+    """Drop memory + disk folder cache; next list will rescan KEEP_DIR."""
+    invalidate_folders_cache(settings.config_dir)
+    return {"ok": True, "invalidated": True}
 
 
 @app.post("/api/keepers/folders")
@@ -223,7 +214,6 @@ async def create_keeper_folder(
     name = body.name.strip()
     if not folder_name_ok(name):
         raise HTTPException(400, "Invalid folder name")
-    dest = settings.archive_dir / name
     try:
         dest = resolve_under(settings.archive_dir, name)
     except PathEscapeError as exc:
@@ -233,6 +223,7 @@ async def create_keeper_folder(
             raise HTTPException(400, "Path exists and is not a folder")
         return {"ok": True, "folder": name, "created": False}
     dest.mkdir(parents=False, exist_ok=False)
+    bump_after_mutate(settings.config_dir, settings.archive_dir, KEEP_FOLDER_MAX_DEPTH)
     return {"ok": True, "folder": name, "created": True}
 
 

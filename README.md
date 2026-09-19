@@ -15,6 +15,8 @@ Works anywhere you can run Docker: Linux NAS (Unraid, TrueNAS), a homelab box, o
 - Path escape protection (`realpath` under allowed roots)
 - Optional HTTP Basic Auth for the curator UI
 - Cached JPEG thumbnails (Pillow)
+- **Keepers folder tree cache** (server memory + `CONFIG_DIR/folders-cache.json`, ~120s TTL / root mtime; UI keeps last list warm across Move/Copy modal open)
+- **Bulk action progress** (copy / move / delete): sequential per-file with determinate progress; continues after errors and reports a count
 
 ## Quick start (Docker Compose)
 
@@ -144,10 +146,28 @@ uvicorn app.main:app --reload --port 8080
 | GET | `/api/images?page=&limit=&kind=` | List images (newest first; `kind`=`all\|output\|input\|unknown`) |
 | GET | `/api/images/thumb?path=` | Cached JPEG thumb |
 | GET | `/api/images/file?path=` | Full image (path must stay under outputs) |
-| GET/POST | `/api/keepers/folders` | List recursive / create keeper subfolders (`/api/friends/folders` alias) |
+| GET/POST | `/api/keepers/folders` | List recursive (served from cache; `?refresh=1` forces rescan) / create keeper subfolders (`/api/friends/folders` alias) |
+| POST | `/api/keepers/folders/invalidate` | Drop memory + disk folder cache (`/api/friends/folders/invalidate` alias) |
 | POST | `/api/actions/copy` | `{paths[], dest_folder}` |
 | POST | `/api/actions/move` | Copy then Invoke delete |
 | POST | `/api/actions/delete` | Invoke delete only |
+
+
+## Keepers folder cache
+
+Recursive listing under `KEEP_DIR` can be slow on large archive shares (e.g. Friends). The app caches the tree:
+
+1. **In-memory** for ~120s (also invalidated when you create a folder).
+2. **On disk** at `$CONFIG_DIR/folders-cache.json` so cold starts after restart stay fast.
+3. Freshness also checks the **KEEP_DIR root mtime** (new top-level folders show up without waiting forever).
+
+`GET /api/keepers/folders?refresh=1` (or the UI **Refresh folders** button) forces a rescan. The Move/Copy modal keeps the last loaded list in memory so reopening does not wait on the network when warm.
+
+## Bulk actions & progress
+
+Copy, move, and delete run **one image at a time** so the UI can show a determinate progress bar (`12 / 48`) and the current filename. Move is still copy-then-Invoke-delete per file.
+
+**Error policy:** on a per-item failure the run **continues** with the rest; the panel shows an error count and the toast summarizes (`N ok, M failed`). Successful items are removed from the selection; failed ones stay selected. Confirm/Cancel are disabled while a bulk run is in progress.
 
 ## License
 

@@ -10,10 +10,12 @@
     appTitle: "Invoke Library",
     action: null, // 'copy' | 'move' | 'delete'
     folders: [],
+    foldersLoaded: false, // warm in-memory list across modal open/close
     folderFilter: "",
     selectedFolder: "",
     kindFilter: "all", // all | output | input
     kindCounts: { all: 0, output: 0, input: 0, unknown: 0 },
+    bulkRunning: false,
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -255,14 +257,18 @@
       state.folderFilter = "";
       const filterEl = $("#folder-filter");
       if (filterEl) filterEl.value = "";
-      loadFolders();
+      resetProgressPanel();
+      // Reuse in-memory folder list when warm; first open / force still network-loads.
+      loadFolders({ force: false });
     }
     backdrop.classList.add("open");
   }
 
   function closeModal() {
+    if (state.bulkRunning) return;
     $("#modal").classList.remove("open");
     state.action = null;
+    resetProgressPanel();
   }
 
   function filteredFolders() {
@@ -315,12 +321,22 @@
     list.appendChild(frag);
   }
 
-  async function loadFolders() {
+  async function loadFolders({ force = false } = {}) {
     const list = $("#folder-list");
+    const warm = state.foldersLoaded && !force;
+    if (warm) {
+      renderFolderList();
+      updateSelectedFolderLabel();
+      return;
+    }
     if (list) list.innerHTML = `<div class="folder-list-empty">Loading…</div>`;
+    const refreshBtn = $("#btn-refresh-folders");
+    if (refreshBtn) refreshBtn.disabled = true;
     try {
-      const data = await api("/api/keepers/folders");
+      const q = force ? "?refresh=1" : "";
+      const data = await api(`/api/keepers/folders${q}`);
       state.folders = data.folders || [];
+      state.foldersLoaded = true;
       if (state.selectedFolder && !state.folders.includes(state.selectedFolder)) {
         state.selectedFolder = "";
       }
@@ -332,6 +348,8 @@
     } catch (err) {
       if (list) list.innerHTML = `<div class="folder-list-empty">Failed to load folders</div>`;
       toast(err.message, "error");
+    } finally {
+      if (refreshBtn) refreshBtn.disabled = false;
     }
   }
 
@@ -343,14 +361,73 @@
       .replace(/"/g, "&quot;");
   }
 
+  function basename(path) {
+    const parts = String(path || "").split("/");
+    return parts[parts.length - 1] || path || "";
+  }
+
+  function resetProgressPanel() {
+    const panel = $("#progress-panel");
+    if (!panel) return;
+    panel.hidden = true;
+    $("#progress-label").textContent = "Working…";
+    $("#progress-bar").style.width = "0%";
+    $("#progress-text").textContent = "0 / 0";
+    $("#progress-current").textContent = "";
+    $("#progress-errors").textContent = "";
+  }
+
+  function showProgressPanel() {
+    const panel = $("#progress-panel");
+    if (panel) panel.hidden = false;
+  }
+
+  function updateProgress({ label, done, total, current, errors }) {
+    showProgressPanel();
+    if (label != null) $("#progress-label").textContent = label;
+    const t = Math.max(0, total || 0);
+    const d = Math.max(0, Math.min(done || 0, t || done || 0));
+    const pct = t ? Math.round((d / t) * 100) : 0;
+    $("#progress-bar").style.width = `${pct}%`;
+    $("#progress-text").textContent = `${d} / ${t}`;
+    if (current != null) $("#progress-current").textContent = current;
+    if (errors != null) {
+      $("#progress-errors").textContent = errors
+        ? `${errors} failed (continued with remaining)`
+        : "";
+    }
+  }
+
+  function setBulkUiRunning(running) {
+    state.bulkRunning = running;
+    const confirm = $("#btn-confirm");
+    const cancel = $("#btn-cancel");
+    if (confirm) confirm.disabled = running;
+    if (cancel) cancel.disabled = running;
+    const keep = $("#keep-controls");
+    if (keep) {
+      keep.querySelectorAll("input, button, select").forEach((el) => {
+        el.disabled = running;
+      });
+    }
+  }
+
+  /** Yield so the browser can paint between sequential awaits. */
+  function yieldToUi() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
+  }
+
   async function createFolder() {
     const input = $("#new-folder");
     const name = (input.value || "").trim();
-    if (!name) return;
+    if (!name || state.bulkRunning) return;
     try {
       await api("/api/keepers/folders", { method: "POST", body: JSON.stringify({ name }) });
       input.value = "";
-      await loadFolders();
+      // Server invalidates/rebuilds cache on create; force client reload.
+      await loadFolders({ force: true });
       selectFolder(name);
       toast(`Created folder “${name}”`, "ok");
     } catch (err) {
@@ -358,48 +435,146 @@
     }
   }
 
+  /**
+   * Bulk copy / move / delete runs one file at a time so the progress bar can
+   * update. On per-item errors we continue (error count in the panel); toast
+   * summarizes at the end.
+   */
   async function confirmAction() {
     const paths = [...state.selected];
-    if (!paths.length || !state.action) return;
-    const btn = $("#btn-confirm");
-    btn.disabled = true;
+    if (!paths.length || !state.action || state.bulkRunning) return;
+
+    let dest = "";
+    if (state.action !== "delete") {
+      dest = state.selectedFolder;
+      if (!dest) {
+        toast("Choose or create a destination folder", "error");
+        return;
+      }
+    }
+
+    const action = state.action;
+    const total = paths.length;
+    let done = 0;
+    let errors = 0;
+    const failed = [];
+
+    const verb =
+      action === "delete" ? "Deleting" : action === "move" ? "Moving" : "Copying";
+    const endpoint =
+      action === "delete"
+        ? "/api/actions/delete"
+        : action === "move"
+          ? "/api/actions/move"
+          : "/api/actions/copy";
+
+    setBulkUiRunning(true);
+    // Hide folder picker noise while running keep actions; delete already hides it.
+    if (action !== "delete") {
+      const keep = $("#keep-controls");
+      if (keep) keep.style.display = "none";
+    }
+    const confirmOnly = $("#confirm-only");
+    if (action === "delete" && confirmOnly) confirmOnly.style.display = "none";
+
+    updateProgress({
+      label: `${verb}…`,
+      done: 0,
+      total,
+      current: "",
+      errors: 0,
+    });
+
     try {
-      if (state.action === "delete") {
-        const res = await api("/api/actions/delete", {
-          method: "POST",
-          body: JSON.stringify({ paths }),
+      for (let i = 0; i < paths.length; i++) {
+        const path = paths[i];
+        const name = basename(path);
+        updateProgress({
+          label: `${verb}…`,
+          done,
+          total,
+          current: name,
+          errors,
         });
-        toast(`Deleted ${(res.deleted_images || []).length} via InvokeAI`, "ok");
-      } else {
-        const dest = state.selectedFolder;
-        if (!dest) {
-          toast("Choose or create a destination folder", "error");
-          return;
+        await yieldToUi();
+
+        try {
+          const body =
+            action === "delete"
+              ? { paths: [path] }
+              : { paths: [path], dest_folder: dest };
+          await api(endpoint, { method: "POST", body: JSON.stringify(body) });
+          done += 1;
+          // Drop from selection as each succeeds so a partial failure leaves the rest selected.
+          state.selected.delete(path);
+        } catch (err) {
+          errors += 1;
+          failed.push({ path, message: err.message || "failed" });
+          updateProgress({
+            label: `${verb}…`,
+            done,
+            total,
+            current: `${name} — ${err.message || "error"}`,
+            errors,
+          });
+          await yieldToUi();
         }
-        const endpoint = state.action === "move" ? "/api/actions/move" : "/api/actions/copy";
-        const res = await api(endpoint, {
-          method: "POST",
-          body: JSON.stringify({ paths, dest_folder: dest }),
+
+        updateProgress({
+          label: `${verb}…`,
+          done,
+          total,
+          current: name,
+          errors,
         });
-        const n = (res.results || []).length;
+      }
+
+      updateProgress({
+        label: errors ? `${verb} finished with errors` : `${verb} complete`,
+        done,
+        total,
+        current: "",
+        errors,
+      });
+      await yieldToUi();
+
+      if (errors === 0) {
         toast(
-          state.action === "move"
-            ? `Moved ${n} (copied + Invoke delete)`
-            : `Copied ${n} to ${state.keepLabel}`,
+          action === "delete"
+            ? `Deleted ${done} via InvokeAI`
+            : action === "move"
+              ? `Moved ${done} (copied + Invoke delete)`
+              : `Copied ${done} to ${state.keepLabel}`,
           "ok"
         );
+        state.selected.clear();
+        setBulkUiRunning(false);
+        closeModal();
+      } else {
+        const first = failed[0];
+        toast(
+          `${done} ok, ${errors} failed` +
+            (first ? ` — first: ${basename(first.path)}: ${first.message}` : ""),
+          "error"
+        );
+        updateToolbar();
+        renderGrid();
+        // Re-enable cancel so user can dismiss; keep confirm disabled until modal closed.
+        state.bulkRunning = false;
+        const cancel = $("#btn-cancel");
+        if (cancel) cancel.disabled = false;
+        const confirm = $("#btn-confirm");
+        if (confirm) confirm.disabled = true;
       }
-      clearSelection();
-      closeModal();
       await loadImages();
     } catch (err) {
-      const hint =
-        err.payload && err.payload.detail && err.payload.detail.hint
-          ? ` — ${err.payload.detail.hint}`
-          : "";
-      toast(err.message + hint, "error");
+      toast(err.message || "Bulk action failed", "error");
+      state.bulkRunning = false;
+      setBulkUiRunning(false);
     } finally {
-      btn.disabled = false;
+      if (errors === 0) {
+        setBulkUiRunning(false);
+      }
     }
   }
 
@@ -462,6 +637,10 @@
     $("#btn-cancel").addEventListener("click", closeModal);
     $("#btn-confirm").addEventListener("click", confirmAction);
     $("#btn-create-folder").addEventListener("click", createFolder);
+    const refreshFoldersBtn = $("#btn-refresh-folders");
+    if (refreshFoldersBtn) {
+      refreshFoldersBtn.addEventListener("click", () => loadFolders({ force: true }));
+    }
     $("#folder-filter").addEventListener("input", (e) => {
       state.folderFilter = e.target.value || "";
       renderFolderList();
@@ -483,7 +662,7 @@
     });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        closeModal();
+        if (!state.bulkRunning) closeModal();
         closeLightbox();
       }
       // Ctrl/Cmd+A: select all on current page when focus is in the grid (avoid fighting browser elsewhere).

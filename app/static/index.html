@@ -55,11 +55,23 @@
         <label id="folder-list-label">Destination folder</label>
         <div id="folder-list" class="folder-list" role="listbox" aria-labelledby="folder-list-label"></div>
         <div id="folder-selected" class="folder-selected meta">No folder selected</div>
+        <div class="folder-toolbar">
+          <button type="button" id="btn-refresh-folders" title="Reload folder list from disk">Refresh folders</button>
+        </div>
         <label for="new-folder">Or create folder</label>
         <div class="new-folder-row">
           <input type="text" id="new-folder" placeholder="New folder name" maxlength="200" />
           <button type="button" id="btn-create-folder">Create</button>
         </div>
+      </div>
+      <div id="progress-panel" class="progress-panel" hidden>
+        <div id="progress-label" class="progress-label">Working…</div>
+        <div class="progress-track" aria-hidden="true">
+          <div id="progress-bar" class="progress-fill" style="width:0%"></div>
+        </div>
+        <div id="progress-text" class="progress-text">0 / 0</div>
+        <div id="progress-current" class="progress-current meta"></div>
+        <div id="progress-errors" class="progress-errors meta"></div>
       </div>
       <div class="modal-actions">
         <button type="button" id="btn-cancel">Cancel</button>
